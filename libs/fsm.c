@@ -191,6 +191,7 @@ Status SetAuthentication(
 	char command[256];
 	int i;
 	int fd;
+	int rc;
 
 	if (!SessionSupport)
 	{
@@ -274,7 +275,12 @@ Status SetAuthentication(
 	umask (original_umask);
 
 	sprintf (command, "iceauth source %s", addAuthFile);
-	system(command);
+	{
+		int n;
+
+		n = system(command);
+		(void)n;
+	}
 
 	unlink (addAuthFile);
 
@@ -313,6 +319,7 @@ void FreeAuthenticationData(int count, FIceAuthDataEntry *authDataEntries)
 
 	char command[256];
 	int i;
+	int rc;
 
 	if (!SessionSupport)
 	{
@@ -328,7 +335,12 @@ void FreeAuthenticationData(int count, FIceAuthDataEntry *authDataEntries)
 	free ((char *) authDataEntries);
 
 	sprintf (command, "iceauth source %s", remAuthFile);
-	system(command);
+	{
+		int n;
+
+		n = system(command);
+		(void)n;
+	}
 
 	unlink (remAuthFile);
 

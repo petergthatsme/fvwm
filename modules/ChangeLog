@@ -1,3 +1,218 @@
+2014-09-20  Dominik Vogt  <dominik(dot)vogt(at)gmx(dot)de>
+
+	* FvwmWharf/FvwmWharf.c (swallow):
+	* FvwmTaskBar/FvwmTaskBar.c (ProcessMessage):
+	* FvwmIconMan/xmanager.c (fix_manager_size):
+	* FvwmButtons/draw.c (MakeButton):
+	* FvwmButtons/FvwmButtons.c (Loop):
+	(HandlePanelPress):
+	Use FGetWMNormalHints
+
+2014-09-20  Dominik Vogt  <dominik(dot)vogt(at)gmx(dot)de>
+
+	* FvwmDragWell/fvwmDragWell.c (veryLongLoop):
+	* FvwmForm/ReadXServer.c (ReadXServer):
+	* FvwmIconMan/x.c (xevent_loop):
+	* FvwmIconBox/FvwmIconBox.c (Loop):
+	* FvwmIdent/FvwmIdent.c (ProcessXEvent):
+	* FvwmPager/FvwmPager.c (main):
+	* FvwmPager/x_pager.c (DispatchEvent):
+	* FvwmScroll/GrabWindow.c (LoopOnEvents):
+	* FvwmScript/FvwmScript.c (ReadXServer):
+	* FvwmTaskBar/FvwmTaskBar.c (HandleEvents):
+	* FvwmWinList/FvwmWinList.c (LoopOnEvents):
+	* FvwmButtons/FvwmButtons.c (Loop):
+	Use fev_sanitise_configure_notify()
+
+2014-08-29  Dominik Vogt  <dominik(dot)vogt(at)gmx(dot)de>
+
+	* FvwmIconMan/globals.c:
+	add entry "iconandselect" and sort to match the "Contexts" enum
+
+2014-08-20  Dominik Vogt  <dominik(dot)vogt(at)gmx(dot)de>
+
+	* FvwmPager/FvwmPager.c (list_window_name, list_icon_name)
+	(list_mini_icon):
+	fix unnecessary redraws
+
+2014-08-12  Dominik Vogt  <dominik(dot)vogt(at)gmx(dot)de>
+
+	* FvwmConsole/FvwmConsole.c (main):
+	Use SetMessageMask to limit the messages fvwm sends to simple error
+	messages.
+	* FvwmConsole/FvwmConsole.c (server):
+	* FvwmConsole/FvwmConsole.h (M_PASS):
+	removed M_PASS in favour of M_ERROR
+
+2014-08-11  Dominik Vogt  <dominik(dot)vogt(at)gmx(dot)de>
+
+	* FvwmIconMan/xmanager.c (set_win_iconified):
+	(add_win_state)
+	(draw_button):
+	(delete_windows_button):
+	* FvwmIconMan/readconfig.c (read_in_resources)
+	* FvwmIconMan/fvwm.c (set_win_configuration):
+	* FvwmIconMan/FvwmIconMan.h:
+	* FvwmIconMan/FvwmIconMan.1.in:
+	introduce IconAndSelectButton and IconAndSelectColorset options in
+	FvwmIconMan
+
+2014-07-04  Dominik Vogt  <dominik(dot)vogt(at)gmx(dot)de>
+
+	* FvwmProxy/ConfigFvwmProxyDefaults:
+	Use "WarpToWindow !raise" in FvwmProxySelectFunc.
+
+2014-06-28  Thomas Adam <thomas@fvwm.org>
+	* modules/Makefile.am:
+	* modules/FvwmAnimate/Makefile.am:
+	* modules/FvwmAuto/Makefile.am:
+	* modules/FvwmBacker/Makefile.am:
+	* modules/FvwmBanner/Makefile.am:
+	* modules/FvwmButtons/Makefile.am:
+	* modules/FvwmCommand/Makefile.am:
+	* modules/FvwmCommand/scripts/Makefile.am:
+	* modules/FvwmConsole/Makefile.am:
+	* modules/FvwmCpp/Makefile.am:
+	* modules/FvwmDebug/Makefile.am:
+	* modules/FvwmDragWell/Makefile.am:
+	* modules/FvwmEvent/Makefile.am:
+	* modules/FvwmForm/Makefile.am:
+	* modules/FvwmGtk/Makefile.am:
+	* modules/FvwmIconBox/Makefile.am:
+	* modules/FvwmIconMan/Makefile.am:
+	* modules/FvwmIdent/Makefile.am:
+	* modules/FvwmM4/Makefile.am:
+	* modules/FvwmPager/Makefile.am:
+	* modules/FvwmPerl/Makefile.am:
+	* modules/FvwmProxy/Makefile.am:
+	* modules/FvwmRearrange/Makefile.am:
+	* modules/FvwmSave/Makefile.am:
+	* modules/FvwmSaveDesk/Makefile.am:
+	* modules/FvwmScript/Makefile.am:
+	* modules/FvwmScript/Scripts/Makefile.am:
+	* modules/FvwmScript/Widgets/Makefile.am:
+	* modules/FvwmScroll/Makefile.am:
+	* modules/FvwmTabs/Makefile.am:
+	* modules/FvwmTaskBar/Makefile.am:
+	* modules/FvwmTheme/Makefile.am:
+	* modules/FvwmWharf/Makefile.am:
+	* modules/FvwmWinList/Makefile.am:
+	* modules/FvwmWindowMenu/Makefile.am:
+	Autotools:  INCLUDES macro deprecated.  Renamed to AM_CPPFLAGS
+
+2014-03-01  Thomas Funk  <t.funk@web.de>
+
+	* FvwmForm/FvwmForm-MultiMenuHelp:
+	apply patch by Dominique Michel
+
+2014-01-06  Dominik Vogt  <dominik(dot)vogt(at)gmx(dot)de>
+
+	* FvwmButtons/FvwmButtons.1.in:
+	improve documentation of the dynamic button options
+	remove trailing whitespace
+
+2013-10-24  Thomas Funk  <t.funk@web.de>
+
+	* FvwmForm/FvwmForm-GenOptionHelp:
+	* FvwmForm/FvwmForm-MultiMenuHelp:
+	* FvwmForm/FvwmForm-SingleMenuHelp:
+	add help windows for revised fvwm-menu-desktop-config.fpl
+
+	* FvwmForm/Makefile.am:
+	add FvwmForm help windows to EXTRA_DIST and config_DATA
+
+2013-10-22  Dan Espen  <despen@verizon.net>
+
+	* FvwmPager/FvwmPager.1.in: Spelling correction
+	from Vincent W. Chen.
+
+2013-06-12  Dominik Vogt  <dominik(dot)vogt(at)gmx(dot)de>
+
+	* FvwmIconMan/xmanager.c (draw_button_background):
+	new attempt to fix bad hilight colour
+
+	* FvwmIconMan/x.c (change_colorset, recreate_background)
+	(create_manager_window):
+	remove previous attempt to fix bad hilight colour
+
+2013-04-14  Dominik Vogt  <dominik(dot)vogt(at)gmx(dot)de>
+
+	* FvwmIconMan/x.c (change_colorset, recreate_background)
+	(create_manager_window):
+	fix bad hilight colour on some systems (64 bit issue?)
+
+2013-04-24  Dominik Vogt  <dominik(dot)vogt(at)gmx(dot)de>
+
+	* FvwmScript/Instructions.c (Exec, FuncGetOutput, LaunchScript)
+	(FuncSendMsgAndGet, Equal, Diff):
+	* FvwmProxy/FvwmProxy.c (GetParentProcessId):
+	* FvwmIconMan/debug.c (ConsoleMessage):
+	* FvwmIconBox/FvwmIconBox.c (MySendFvwmPipe):
+	* FvwmForm/FvwmForm.c (TimerHandler, DoCommand):
+	* FvwmCommand/FvwmCommandS.c (open_fifos):
+	* FvwmCommand/FvwmCommand.c (main, sendit):
+	* FvwmButtons/parse.c (ParseConfigFile):
+	fix warnings about ignored function return code
+
+	* FvwmIconMan/functions.c (builtin_print):
+	remove unused variable
+
+	* FvwmForm/FvwmForm.c (RedrawSeparator):
+	fix pointer format in fprintf
+
+2013-04-04  Dan Espen  <despen@verizon.net>
+
+	* FvwmIconMan/FvwmIconMan.1.in: Grammar fix from scootch132@yahoo.com.
+
+2013-02-05  Thomas Adam  <thomas@fvwm.org>
+	* modules/FvwmPager/x_pager.c (MapBalloonWindow):
+	Don't let desks enter negative offsets.
+
+2013-01-22  Thomas Adam  <thomas@fvwm.org>
+	* modules/FvwmWharf/FvwmWharf.c (FindLockMode):
+	Fix missing deprecation of XKeycodeToKeysym() and fvwm_KeycodeToKeysym()
+
+2013-01-22  Thomas Adam  <thomas@fvwm.org>
+	* FvwmIconMan/debug.c (ConsoleMessage):
+	* FvwmIconMan/functions.c (builtin_print):
+	Comply with Debian's hardening rules.
+
+	Debian's policy of what's considered "fit for purpose" for inclusion in
+	its repositoy of packages says that all compiled programs must pass the
+	following:
+
+	CFLAGS="-I/usr/local/include -g -O2 -fstack-protector \
+			--param=ssp-buffer-size=4 -Wformat -Werror=format-security" \
+	LDFLAGS="-L/usr/local/lib"
+
+	http://wiki.debian.org/HardeningWalkthrough
+
+2013-01-19  Dan Espen  <despen@verizon.net>
+
+	* FvwmButtons/FvwmButtons.1.in:
+	* FvwmTheme/FvwmTheme.1.in:
+	* FvwmAuto/FvwmAuto.1.in: manpage-error patch
+	from Vincent W. Chen Lintain Debian.
+
+	* FvwmIconMan/FvwmIconMan.1.in:
+	* FvwmProxy/FvwmProxy.1.in:
+	* FvwmScript/FvwmScript.1.in:
+	* FvwmDebug/FvwmDebug.1:
+	* FvwmPerl/FvwmPerl.1:
+	* FvwmTabs/FvwmTabs.1: spelling-error-manpage patch
+	from Vincent W. Chen Lintain Debian.
+
+	* FvwmIconMan/readconfig.c:
+	* FvwmIconMan/winlist.c: spelling-error-binary patch
+	from Vincent W. Chen Lintain Debian.
+
+
+2012-07-30  Dan Espen  <despen@verizon.net>
+
+	* FvwmForm/FvwmForm.1.in: Document Separator feature.
+	* FvwmForm/FvwmForm.c: Add Separator feature.
+	* FvwmForm/FvwmForm.h: Add Separator Item.
+
 2012-06-29  Dan Espen  <despen@verizon.net>
 
 	* FvwmForm/FvwmForm-Desktop: Support --with-titles, --size, --theme.

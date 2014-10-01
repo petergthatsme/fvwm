@@ -1785,6 +1785,9 @@ int main(int argc, char **argv)
 	DBUG("main", "Entered, about to parse args");
 
 	fvwmlib_init_max_fd();
+	/* Tell the FEvent module an event type that is not used by fvwm. */
+	fev_init_invalid_event_type(KeymapNotify);
+
 	/* close open fds */
 	for (i = 3; i < fvwmlib_max_fd; i++)
 	{
@@ -2412,7 +2415,7 @@ int main(int argc, char **argv)
 		CWBackPixmap | CWBorderPixel | CWCursor, &attributes);
 	XMapWindow(dpy, Scr.NoFocusWin);
 	SetMWM_INFO(Scr.NoFocusWin);
-	FOCUS_SET(Scr.NoFocusWin);
+	FOCUS_SET(Scr.NoFocusWin, NULL);
 
 	frame_init();
 	XFlush(dpy);

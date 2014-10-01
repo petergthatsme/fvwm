@@ -84,6 +84,24 @@ static FvwmWindow *LastScreenFocus = NULL;
 
 /* ---------------------------- exported variables (globals) --------------- */
 
+/* ---------------------------- interface functions ------------------------ */
+
+void _focus_set(Window w, FvwmWindow *fw)
+{
+	Scr.focus_in_requested_window = fw;
+	XSetInputFocus(dpy, w, RevertToParent, CurrentTime);
+
+	return;
+}
+
+void _focus_reset(void)
+{
+	Scr.focus_in_requested_window = NULL;
+	XSetInputFocus(dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
+
+	return;
+}
+
 /* ---------------------------- local functions ---------------------------- */
 
 static Bool focus_get_fpol_context_flag(
@@ -310,7 +328,7 @@ static void __set_focus_to_fwin(
 	sf = get_focus_window();
 	if (fw == NULL)
 	{
-		FOCUS_SET(Scr.NoFocusWin);
+		FOCUS_SET(Scr.NoFocusWin, NULL);
 		set_focus_window(NULL);
 		Scr.UnknownWinFocused = None;
 		XFlush(dpy);
@@ -336,7 +354,7 @@ static void __set_focus_to_fwin(
 
 	if (FP_IS_LENIENT(FW_FOCUS_POLICY(fw)))
 	{
-		FOCUS_SET(w);
+		FOCUS_SET(w, fw);
 		set_focus_window(fw);
 		if (args->do_allow_force_broadcast)
 		{
@@ -352,10 +370,10 @@ static void __set_focus_to_fwin(
 			/* Without this FocusIn is not generated on the
 			 * window if it was focuesed when the unmanaged
 			 * window took focus. */
-			FOCUS_SET(Scr.NoFocusWin);
+			FOCUS_SET(Scr.NoFocusWin, NULL);
 
 		}
-		FOCUS_SET(w);
+		FOCUS_SET(w, fw);
 		set_focus_window(fw);
 		if (fw)
 		{
@@ -372,7 +390,7 @@ static void __set_focus_to_fwin(
 	}
 	else
 	{
-		FOCUS_SET(Scr.NoFocusWin);
+		FOCUS_SET(Scr.NoFocusWin, NULL);
 		set_focus_window(NULL);
 	}
 	XFlush(dpy);
@@ -425,7 +443,7 @@ static void set_focus_to_fwin(
  */
 static void warp_to_fvwm_window(
 	const exec_context_t *exc, int warp_x, int x_unit, int warp_y,
-	int y_unit)
+	int y_unit, int do_raise)
 {
 	int dx,dy;
 	int cx,cy;
@@ -520,7 +538,10 @@ static void warp_to_fvwm_window(
 	}
 	FWarpPointerUpdateEvpos(
 		exc->x.elast, dpy, None, Scr.Root, 0, 0, 0, 0, x, y);
-	RaiseWindow(t, False);
+	if (do_raise)
+	{
+		RaiseWindow(t, False);
+	}
 	/* If the window is still not visible, make it visible! */
 	if (t->g.frame.x + t->g.frame.width  < 0 ||
 	    t->g.frame.y + t->g.frame.height < 0 ||
@@ -1134,7 +1155,7 @@ void focus_force_refresh_focus(const FvwmWindow *fw)
 		XSelectInput(
 			dpy, FW_W(fw),
 			winattrs.your_event_mask & ~FocusChangeMask);
-		FOCUS_SET(FW_W(fw));
+		FOCUS_SET(FW_W(fw), NULL /* we don't expect an event */);
 		XSelectInput(dpy, FW_W(fw), winattrs.your_event_mask);
 	}
 	MyXUngrabServer(dpy);
@@ -1195,18 +1216,37 @@ void CMD_WarpToWindow(F_CMD_ARGS)
 {
 	int val1_unit, val2_unit, n;
 	int val1, val2;
+	int do_raise;
+	char *next;
+	char *token;
 
+	next = GetNextToken(action, &token);
+	if (StrEquals(token, "!raise"))
+	{
+		do_raise = 0;
+		action = next;
+	}
+	else if (StrEquals(token, "raise"))
+	{
+		do_raise = 1;
+		action = next;
+	}
+	else
+	{
+		do_raise = 1;
+	}
 	n = GetTwoArguments(action, &val1, &val2, &val1_unit, &val2_unit);
 	if (exc->w.wcontext != C_UNMANAGED)
 	{
 		if (n == 2)
 		{
 			warp_to_fvwm_window(
-				exc, val1, val1_unit, val2, val2_unit);
+				exc, val1, val1_unit, val2, val2_unit,
+				do_raise);
 		}
 		else
 		{
-			warp_to_fvwm_window(exc, 0, 0, 0, 0);
+			warp_to_fvwm_window(exc, 0, 0, 0, 0, do_raise);
 		}
 	}
 	else

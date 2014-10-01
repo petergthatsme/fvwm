@@ -17,30 +17,36 @@ FvwmTalk: ../../config.h Makefile
 ## NB: Neither _MANS nor _DATA are included by default in
 ## distributions!
 EXTRA_DIST = $(man_MANS) Changes \
-  FvwmForm-Setup.in   \
-  FvwmForm-Form       \
-  FvwmForm-Capture    \
-  FvwmForm-Desktop    \
-  FvwmForm-QuitVerify \
-  FvwmForm-Rlogin     \
-  FvwmForm-RootCursor \
-  FvwmForm-Talk       \
-  FvwmForm-TalkHelp
+  FvwmForm-Setup.in       \
+  FvwmForm-Form           \
+  FvwmForm-Capture        \
+  FvwmForm-Desktop        \
+  FvwmForm-QuitVerify     \
+  FvwmForm-Rlogin         \
+  FvwmForm-RootCursor     \
+  FvwmForm-Talk           \
+  FvwmForm-TalkHelp       \
+  FvwmForm-GenOptionHelp  \
+  FvwmForm-MultiMenuHelp  \
+  FvwmForm-SingleMenuHelp
 
 FvwmForm_SOURCES = FvwmForm.c FvwmForm.h ReadXServer.c ParseCommand.c
 
 FvwmForm_DEPENDENCIES = $(top_builddir)/libs/libfvwm.a
 
-config_DATA =        \
-  FvwmForm-Setup      \
-  FvwmForm-Form       \
-  FvwmForm-Capture    \
-  FvwmForm-Desktop    \
-  FvwmForm-QuitVerify \
-  FvwmForm-Rlogin     \
-  FvwmForm-RootCursor \
-  FvwmForm-Talk       \
-  FvwmForm-TalkHelp
+config_DATA =             \
+  FvwmForm-Setup          \
+  FvwmForm-Form           \
+  FvwmForm-Capture        \
+  FvwmForm-Desktop        \
+  FvwmForm-QuitVerify     \
+  FvwmForm-Rlogin         \
+  FvwmForm-RootCursor     \
+  FvwmForm-Talk           \
+  FvwmForm-TalkHelp       \
+  FvwmForm-GenOptionHelp  \
+  FvwmForm-MultiMenuHelp  \
+  FvwmForm-SingleMenuHelp
 
 ## Xpm note: while this module may not depend on Xpm explicitly,
 ## there are sometimes dependencies through functions in libfvwm
@@ -49,7 +55,7 @@ LDADD = -L$(top_builddir)/libs -lfvwm $(Xft_LIBS) $(X_LIBS)  \
 	$(X_PRE_LIBS) $(Xinerama_LIBS) -lXext -lX11 $(X_EXTRA_LIBS) \
 	-lm $(Xrender_LIBS) $(rsvg_LIBS) $(iconv_LIBS) $(Bidi_LIBS)
 
-INCLUDES = -I$(top_srcdir) $(Xft_CFLAGS) $(X_CFLAGS) $(iconv_CFLAGS) \
+AM_CPPFLAGS = -I$(top_srcdir) $(Xft_CFLAGS) $(X_CFLAGS) $(iconv_CFLAGS) \
 	$(Bidi_CFLAGS) $(Xrender_CFLAGS)
 
 FvwmForm-Setup: FvwmForm-Setup.in Makefile

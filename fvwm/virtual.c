@@ -95,6 +95,12 @@ static int prev_desk_and_page_page_y = 0;
 /* ---------------------------- local functions ---------------------------- */
 
 
+static Bool _pred_button_event(Display *display, XEvent *event, XPointer arg)
+{
+	return (event->type == ButtonPress || event->type == ButtonRelease) ?
+		True : False;
+}
+
 static void __drag_viewport(const exec_context_t *exc, int scroll_speed)
 {
 	XEvent e;
@@ -696,7 +702,7 @@ int HandlePaging(
 		int JunkC;
 		unsigned int JunkM;
 
-		if (FCheckPeekIfEvent(dpy, &e, test_button_event, NULL))
+		if (FCheckPeekIfEvent(dpy, &e, _pred_button_event, NULL))
 		{
 			is_timestamp_valid = False;
 			add_time = 0;
@@ -1559,7 +1565,7 @@ Bool get_page_arguments(char *action, int *page_x, int *page_y)
 		{
 			limitdeskx = (0 ^ do_reverse);
 		}
-		else if (StrEquals(token, "nodesklimitx"))
+		else if (StrEquals(token, "nodesklimity"))
 		{
 			limitdesky = (0 ^ do_reverse);
 		}
@@ -2019,10 +2025,7 @@ void CMD_EdgeResistance(F_CMD_ARGS)
 			OLD, "CMD_EdgeResistance",
 			"The command EdgeResistance with three arguments is"
 			" obsolete. Please use the following commands"
-			" instead:");
-		fvwm_msg(OLD, "", cmd);
-		fvwm_msg(OLD, "", stylecmd);
-		fvwm_msg(OLD, "", stylecmd2);
+			" instead:\n%s\n%s\n%s\n", cmd, stylecmd, stylecmd2);
 		execute_function(
 			cond_rc, exc, cmd,
 			FUNC_DONT_REPEAT | FUNC_DONT_EXPAND_COMMAND);

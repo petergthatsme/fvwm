@@ -585,8 +585,8 @@ int GetMoveArguments(
 }
 
 static int ParseOneResizeArgument(
-	char *arg, int scr_size, int base_size, int size_inc, int add_size,
-	int *ret_size)
+	char *arg, int scr_size, int wa_size, int dwa_size, int base_size,
+	int size_inc, int add_size, int *ret_size)
 {
 	float factor;
 	int val;
@@ -603,7 +603,19 @@ static int ParseOneResizeArgument(
 		/* do not change size */
 		return 1;
 	}
-	if (arg[cch-1] == 'p')
+	if (cch > 1 && arg[cch-2] == 'w' && arg[cch-1] == 'a')
+	{
+		/* ewmh working area */
+		factor = (float)wa_size / 100.0;
+		arg[cch-1] = '\0';
+	}
+	else if (cch > 1 && arg[cch-2] == 'd' && arg[cch-1] == 'a')
+	{
+		/* ewmh dynamic working area */
+		factor = (float)dwa_size / 100.0;
+		arg[cch-1] = '\0';
+	}
+	else if (arg[cch-1] == 'p')
 	{
 		factor = 1;
 		arg[cch-1] = '\0';
@@ -736,11 +748,6 @@ static int GetResizeArguments(
 		}
 		else if (StrEquals(token, "direction"))
 		{
-			if (token == NULL)
-			{
-				return 0;
-			}
-
 			*ret_dir = gravity_parse_dir_argument(
 					naction, &naction, DIR_NONE);
 			if (*ret_dir != DIR_NONE)
@@ -749,7 +756,6 @@ static int GetResizeArguments(
 			}
 			else if (*ret_dir == DIR_NONE)
 			{
-
 				tmp_token = PeekToken(naction, &naction);
 				if (tmp_token != NULL &&
 						StrEquals(tmp_token, "automatic"))
@@ -797,27 +803,26 @@ static int GetResizeArguments(
 	naction = GetNextToken(naction, &s2);
 	if (!s2)
 	{
-		if (s1 != NULL)
-		{
-			free(s1);
-		}
+		free(s1);
 		return 0;
 	}
 	*paction = naction;
 
 	n = 0;
 	n += ParseOneResizeArgument(
-		s1, Scr.MyDisplayWidth, w_base, w_inc, w_add, pFinalW);
+		s1, Scr.MyDisplayWidth,
+		Scr.Desktops->ewmh_working_area.width,
+		Scr.Desktops->ewmh_dyn_working_area.width, w_base, w_inc,
+		w_add, pFinalW);
 	n += ParseOneResizeArgument(
-		s2, Scr.MyDisplayHeight, h_base, h_inc, h_add, pFinalH);
-	if (s1 != NULL)
-	{
-		free(s1);
-	}
-	if (s2 != NULL)
-	{
-		free(s2);
-	}
+		s2, Scr.MyDisplayHeight,
+		Scr.Desktops->ewmh_working_area.height,
+		Scr.Desktops->ewmh_dyn_working_area.height, h_base, h_inc,
+		h_add, pFinalH);
+
+	free(s1);
+	free(s2);
+
 	if (n < 2)
 	{
 		n = 0;
@@ -1308,8 +1313,10 @@ static void InteractiveMove(
 
 	if (!do_move_opaque)
 	{
+		int event_types[2] = { EnterNotify, LeaveNotify };
+
 		/* Throw away some events that dont interest us right now. */
-		discard_events(EnterWindowMask|LeaveWindowMask);
+		discard_typed_events(2, event_types);
 		Scr.flags.is_wire_frame_displayed = False;
 		MyXUngrabServer(dpy);
 	}
@@ -1932,21 +1939,35 @@ void CMD_MoveToScreen(F_CMD_ARGS)
 	return;
 }
 
+static void update_pos(
+	int *dest_score, int *dest_pos, int current_pos, int requested_pos)
+{
+	int requested_score;
+
+	requested_score = abs(current_pos - requested_pos);
+	if (requested_score < *dest_score)
+	{
+		*dest_pos = requested_pos;
+		*dest_score = requested_score;
+	}
+
+	return;
+}
+
 /* This function does the SnapAttraction stuff. It takes x and y coordinates
  * (*px and *py) and returns the snapped values. */
 static void DoSnapAttract(
 	FvwmWindow *fw, int Width, int Height, int *px, int *py)
 {
-	int nyt,nxl,dist,closestLeft,closestRight,closestBottom,closestTop;
+	int nyt,nxl;
 	rectangle self;
+	int score_x;
+	int score_y;
 
-	/* resist based on window edges */
-	closestTop = fw->snap_attraction.proximity;
-	closestBottom = fw->snap_attraction.proximity;
-	closestRight = fw->snap_attraction.proximity;
-	closestLeft = fw->snap_attraction.proximity;
 	nxl = -99999;
 	nyt = -99999;
+	score_x = 99999999;
+	score_y = 99999999;
 	self.x = *px;
 	self.y = *py;
 	self.width = Width;
@@ -1969,7 +1990,7 @@ static void DoSnapAttract(
 	{
 		if (*px != *px / fw->snap_grid_x * fw->snap_grid_x)
 		{
-			*px = (*px + ((*px >= 0) ?
+			nxl = (*px + ((*px >= 0) ?
 				      fw->snap_grid_x : -fw->snap_grid_x) /
 			       2) / fw->snap_grid_x * fw->snap_grid_x;
 		}
@@ -1978,7 +1999,7 @@ static void DoSnapAttract(
 	{
 		if (*py != *py / fw->snap_grid_y * fw->snap_grid_y)
 		{
-			*py = (*py + ((*py >= 0) ?
+			nyt = (*py + ((*py >= 0) ?
 				      fw->snap_grid_y : -fw->snap_grid_y) /
 			       2) / fw->snap_grid_y * fw->snap_grid_y;
 		}
@@ -2030,64 +2051,51 @@ static void DoSnapAttract(
 			}
 			/* get other window dimensions */
 			get_visible_window_or_icon_geometry(tmp, &other);
-			/* prevent that window snaps off screen */
-			if (other.x <= 0)
+			if (other.x >= Scr.MyDisplayWidth ||
+			    other.x + other.width <= 0 ||
+			    other.y >= Scr.MyDisplayHeight ||
+			    other.y + other.height <= 0)
 			{
-				other.x -= fw->snap_attraction.proximity + 10000;
-				other.width += fw->snap_attraction.proximity + 10000;
+				/* do not snap to windows that are not currently
+				 * visible */
+				continue;
 			}
-			if (other.y <= 0)
-			{
-				other.y -= fw->snap_attraction.proximity + 10000;
-				other.height += fw->snap_attraction.proximity + 10000;
-			}
-			if (other.x + other.width >= Scr.MyDisplayWidth)
-			{
-				other.width += fw->snap_attraction.proximity + 10000;
-			}
-			if (other.y + other.height >= Scr.MyDisplayHeight)
-			{
-				other.height += fw->snap_attraction.proximity + 10000;
-			}
-
 			/* snap horizontally */
 			if (
 				other.y + other.height > *py &&
 				other.y < *py + self.height)
 			{
-				dist = abs(other.x - (*px + self.width));
-				if (dist < closestRight)
+				if (*px + self.width >= other.x &&
+				    *px + self.width <
+				    other.x + fw->snap_attraction.proximity)
 				{
-					closestRight = dist;
-					if (*px + self.width >= other.x &&
-					    *px + self.width <
-					    other.x + fw->snap_attraction.proximity)
-					{
-						nxl = other.x - self.width;
-					}
-					if (*px + self.width >=
-					    other.x - fw->snap_attraction.proximity &&
-					    *px + self.width < other.x)
-					{
-						nxl = other.x - self.width;
-					}
+					update_pos(
+						&score_x, &nxl, *px,
+						other.x - self.width);
 				}
-				dist = abs(other.x + other.width - *px);
-				if (dist < closestLeft)
+				if (*px + self.width >=
+				    other.x - fw->snap_attraction.proximity &&
+				    *px + self.width < other.x)
 				{
-					closestLeft = dist;
-					if (*px <= other.x + other.width &&
-					    *px > other.x + other.width -
-					    fw->snap_attraction.proximity)
-					{
-						nxl = other.x + other.width;
-					}
-					if (*px <= other.x + other.width +
-					    fw->snap_attraction.proximity &&
-					    *px > other.x + other.width)
-					{
-						nxl = other.x + other.width;
-					}
+					update_pos(
+						&score_x, &nxl, *px,
+						other.x - self.width);
+				}
+				if (*px <= other.x + other.width &&
+				    *px > other.x + other.width -
+				    fw->snap_attraction.proximity)
+				{
+					update_pos(
+						&score_x, &nxl, *px,
+						other.x + other.width);
+				}
+				if (*px <= other.x + other.width +
+				    fw->snap_attraction.proximity &&
+				    *px > other.x + other.width)
+				{
+					update_pos(
+						&score_x, &nxl, *px,
+						other.x + other.width);
 				}
 			}
 			/* snap vertically */
@@ -2095,40 +2103,38 @@ static void DoSnapAttract(
 				other.x + other.width > *px &&
 				other.x < *px + self.width)
 			{
-				dist = abs(other.y - (*py + self.height));
-				if (dist < closestBottom)
+				if (*py + self.height >= other.y &&
+				    *py + self.height < other.y +
+				    fw->snap_attraction.proximity)
 				{
-					closestBottom = dist;
-					if (*py + self.height >= other.y &&
-					    *py + self.height < other.y +
-					    fw->snap_attraction.proximity)
-					{
-						nyt = other.y - self.height;
-					}
-					if (*py + self.height >=
-					    other.y - fw->snap_attraction.proximity &&
-					    *py + self.height < other.y)
-					{
-						nyt = other.y - self.height;
-					}
+					update_pos(
+						&score_y, &nyt, *py,
+						other.y - self.height);
 				}
-				dist = abs(other.y + other.height - *py);
-				if (dist < closestTop)
+				if (*py + self.height >=
+				    other.y - fw->snap_attraction.proximity &&
+				    *py + self.height < other.y)
 				{
-					closestTop = dist;
-					if (*py <=
-					    other.y + other.height &&
-					    *py > other.y + other.height -
-					    fw->snap_attraction.proximity)
-					{
-						nyt = other.y + other.height;
-					}
-					if (*py <= other.y + other.height +
-					    fw->snap_attraction.proximity &&
-					    *py > other.y + other.height)
-					{
-						nyt = other.y + other.height;
-					}
+					update_pos(
+						&score_y, &nyt, *py,
+						other.y - self.height);
+				}
+				if (*py <=
+				    other.y + other.height &&
+				    *py > other.y + other.height -
+				    fw->snap_attraction.proximity)
+				{
+					update_pos(
+						&score_y, &nyt, *py,
+						other.y + other.height);
+				}
+				if (*py <= other.y + other.height +
+				    fw->snap_attraction.proximity &&
+				    *py > other.y + other.height)
+				{
+					update_pos(
+						&score_y, &nyt, *py,
+						other.y + other.height);
 				}
 			}
 		} /* for */
@@ -2147,86 +2153,68 @@ static void DoSnapAttract(
 			( IS_ICONIFIED(fw) &&
 				fw->snap_attraction.mode & SNAP_SCREEN_ICONS ) ||
 			fw->snap_attraction.mode & SNAP_SCREEN_ALL ))
-		{
-		/* horizontally */
+	{
+		/* vertically */
 		if (!(Scr.MyDisplayWidth < (*px) ||
 		      (*px + self.width) < 0))
 		{
-			dist = abs(Scr.MyDisplayHeight - (*py + self.height));
-			if (dist < closestBottom)
+			if (*py + self.height >=
+			    Scr.MyDisplayHeight &&
+			    *py + self.height <
+			    Scr.MyDisplayHeight + fw->snap_attraction.proximity)
 			{
-				closestBottom = dist;
-				if (*py + self.height >=
-				    Scr.MyDisplayHeight &&
-				    *py + self.height <
-				    Scr.MyDisplayHeight + fw->snap_attraction.proximity)
-				{
-					nyt = Scr.MyDisplayHeight -
-						self.height;
-				}
-				if (*py + self.height >=
-				    Scr.MyDisplayHeight - fw->snap_attraction.proximity &&
-				    *py + self.height < Scr.MyDisplayHeight)
-				{
-					nyt = Scr.MyDisplayHeight -
-						self.height;
-				}
+				update_pos(
+					&score_y, &nyt, *py,
+					Scr.MyDisplayHeight - self.height);
 			}
-			dist = abs(*py);
-			if (dist < closestTop)
+			if (*py + self.height >=
+			    Scr.MyDisplayHeight - fw->snap_attraction.proximity &&
+			    *py + self.height < Scr.MyDisplayHeight)
 			{
-				closestTop = dist;
-				if ((*py <= 0)&&(*py > - fw->snap_attraction.proximity))
-				{
-					nyt = 0;
-				}
-				if ((*py <=  fw->snap_attraction.proximity)&&(*py > 0))
-				{
-					nyt = 0;
-				}
+				update_pos(
+					&score_y, &nyt, *py,
+					Scr.MyDisplayHeight - self.height);
 			}
-		} /* horizontally */
-		/* vertically */
+			if ((*py <= 0)&&(*py > - fw->snap_attraction.proximity))
+			{
+				update_pos(&score_y, &nyt, *py, 0);
+			}
+			if ((*py <=  fw->snap_attraction.proximity)&&(*py > 0))
+			{
+				update_pos(&score_y, &nyt, *py, 0);
+			}
+		} /* vertically */
+		/* horizontally */
 		if (!(Scr.MyDisplayHeight < (*py) ||
 		      (*py + self.height) < 0))
 		{
-			dist = abs(
-				Scr.MyDisplayWidth - (*px + self.width));
-			if (dist < closestRight)
+			if (*px + self.width >= Scr.MyDisplayWidth &&
+			    *px + self.width <
+			    Scr.MyDisplayWidth + fw->snap_attraction.proximity)
 			{
-				closestRight = dist;
-
-				if (*px + self.width >= Scr.MyDisplayWidth &&
-				    *px + self.width <
-				    Scr.MyDisplayWidth + fw->snap_attraction.proximity)
-				{
-					nxl = Scr.MyDisplayWidth - self.width;
-				}
-
-				if (*px + self.width >=
-				    Scr.MyDisplayWidth - fw->snap_attraction.proximity &&
-				    *px + self.width < Scr.MyDisplayWidth)
-				{
-					nxl = Scr.MyDisplayWidth - self.width;
-				}
+				update_pos(
+					&score_x, &nxl, *px,
+					Scr.MyDisplayWidth - self.width);
 			}
-			dist = abs(*px);
-			if (dist < closestLeft)
+			if (*px + self.width >=
+			    Scr.MyDisplayWidth - fw->snap_attraction.proximity &&
+			    *px + self.width < Scr.MyDisplayWidth)
 			{
-				closestLeft = dist;
-
-				if ((*px <= 0) &&
-				    (*px > - fw->snap_attraction.proximity))
-				{
-					nxl = 0;
-				}
-				if ((*px <= fw->snap_attraction.proximity) &&
-				    (*px > 0))
-				{
-					nxl = 0;
-				}
+				update_pos(
+					&score_x, &nxl, *px,
+					Scr.MyDisplayWidth - self.width);
 			}
-		} /* vertically */
+			if ((*px <= 0) &&
+			    (*px > - fw->snap_attraction.proximity))
+			{
+				update_pos(&score_x, &nxl, *px, 0);
+			}
+			if ((*px <= fw->snap_attraction.proximity) &&
+			    (*px > 0))
+			{
+				update_pos(&score_x, &nxl, *px, 0);
+			}
+		} /* horizontally */
 	} /* snap to screen edges */
 
 	if (nxl != -99999)
@@ -2245,27 +2233,27 @@ static void DoSnapAttract(
 	{
 		/* snap to right edge */
 		if (
-			*px + Width >= Scr.MyDisplayWidth &&
+			*px + Width > Scr.MyDisplayWidth &&
 			*px + Width < Scr.MyDisplayWidth +
 			fw->edge_resistance_move)
 		{
 			*px = Scr.MyDisplayWidth - Width;
 		}
 		/* snap to left edge */
-		else if ((*px <= 0) && (*px > -fw->edge_resistance_move))
+		else if ((*px < 0) && (*px > -fw->edge_resistance_move))
 		{
 			*px = 0;
 		}
 		/* snap to bottom edge */
 		if (
-			*py + Height >= Scr.MyDisplayHeight &&
+			*py + Height > Scr.MyDisplayHeight &&
 			*py + Height < Scr.MyDisplayHeight +
 			fw->edge_resistance_move)
 		{
 			*py = Scr.MyDisplayHeight - Height;
 		}
 		/* snap to top edge */
-		else if (*py <= 0 && *py > -fw->edge_resistance_move)
+		else if (*py < 0 && *py > -fw->edge_resistance_move)
 		{
 			*py = 0;
 		}
@@ -2474,16 +2462,18 @@ Bool __move_loop(
 				ButtonMotionMask | ExposureMask, &e)))
 		{
 			XEvent le;
+			int x;
+			int y;
 
 			fev_get_last_event(&le);
 
 			xl -= XOffset;
 			yt -= YOffset;
-			
+
 			rc = HandlePaging(
 				&le, dx, dy, &xl, &yt, &delta_x, &delta_y,
 				False, False, True, fw->edge_delay_ms_move);
-				
+
 			/* Fake an event to force window reposition */
 			if (delta_x)
 			{
@@ -2497,15 +2487,26 @@ Bool __move_loop(
 			yt += YOffset;
 			if (do_snap)
 			{
-				DoSnapAttract(
-						fw, Width, Height, &xl, &yt);
+				DoSnapAttract(fw, Width, Height, &xl, &yt);
 				was_snapped = True;
 			}
 			fev_make_null_event(&e, dpy);
 			e.type = MotionNotify;
 			e.xmotion.time = fev_get_evtime();
-			e.xmotion.x_root = xl - XOffset;
-			e.xmotion.y_root = yt - YOffset;
+			if (FQueryPointer(
+				    dpy, Scr.Root, &JunkRoot, &JunkChild, &x,
+				    &y, &JunkX, &JunkY, &JunkMask) == True)
+			{
+				e.xmotion.x_root = x;
+				e.xmotion.y_root = y;
+			}
+			else
+			{
+				/* pointer is on a different screen */
+				e.xmotion.x_root = 0;
+				e.xmotion.y_root = 0;
+			}
+			e.xmotion.state = JunkMask;
 			e.xmotion.same_screen = True;
 			break;
 		}
@@ -2831,6 +2832,10 @@ Bool __move_loop(
 					}
 				}
 			}
+			/* dv (13-Jan-2014): Without this XFlush the modules
+			 * (and probably other windows too) sometimes get their
+			 * expose only after the next motion step.  */
+			XFlush(dpy);
 			break;
 
 		case Expose:
@@ -3037,8 +3042,7 @@ void CMD_SnapAttraction(F_CMD_ARGS)
 	fvwm_msg(
 		OLD, "CMD_SnapAttraction",
 		"The command SnapAttraction is obsolete. Please use the"
-		" following command instead:");
-	fvwm_msg(OLD, "", cmd);
+		" following command instead:\n\n%s", cmd);
 	execute_function(
 		cond_rc, exc, cmd,
 		FUNC_DONT_REPEAT | FUNC_DONT_EXPAND_COMMAND);
@@ -3059,8 +3063,7 @@ void CMD_SnapGrid(F_CMD_ARGS)
 	fvwm_msg(
 		OLD, "CMD_SnapGrid",
 		"The command SnapGrid is obsolete. Please use the following"
-		" command instead:");
-	fvwm_msg(OLD, "", cmd);
+		" command instead:\n\n%s", cmd);
 	execute_function(
 		cond_rc, exc, cmd,
 		FUNC_DONT_REPEAT | FUNC_DONT_EXPAND_COMMAND);
@@ -4003,6 +4006,7 @@ static Bool __resize_window(F_CMD_ARGS)
 	while (!is_finished && bad_window != FW_W(fw))
 	{
 		int rc = 0;
+		int is_resized = False;
 
 		/* block until there is an interesting event */
 		while (rc != -1 &&
@@ -4153,6 +4157,7 @@ static Bool __resize_window(F_CMD_ARGS)
 					exc, x, y, &x_off, &y_off, drag, orig,
 					&xmotion, &ymotion, do_resize_opaque,
 					is_direction_fixed);
+				is_resized = True;
 				/* need to move the viewport */
 				HandlePaging(
 					&ev, dx, dy, &x, &y, &delta_x,
@@ -4171,6 +4176,7 @@ static Bool __resize_window(F_CMD_ARGS)
 					exc, x, y, &x_off, &y_off, drag, orig,
 					&xmotion, &ymotion, do_resize_opaque,
 					is_direction_fixed);
+				is_resized = True;
 			}
 			fForceRedraw = False;
 			is_done = True;
@@ -4214,7 +4220,15 @@ static Bool __resize_window(F_CMD_ARGS)
 			{
 				/* only do this with opaque resizes, (i.e. the
 				 * server is not grabbed) */
-				BroadcastConfig(M_CONFIGURE_WINDOW, fw);
+				if (is_resized == False)
+				{
+					BroadcastConfig(
+						M_CONFIGURE_WINDOW, fw);
+				}
+				else
+				{
+					/* event already broadcast */
+				}
 				FlushAllMessageQueues();
 			}
 		}
@@ -4323,8 +4337,10 @@ static Bool __resize_window(F_CMD_ARGS)
 	ResizeWindow = None;
 	if (!do_resize_opaque)
 	{
+		int event_types[2] = { EnterNotify, LeaveNotify };
+
 		/* Throw away some events that dont interest us right now. */
-		discard_events(EnterWindowMask|LeaveWindowMask);
+		discard_typed_events(2, event_types);
 		Scr.flags.is_wire_frame_displayed = False;
 		MyXUngrabServer(dpy);
 	}
@@ -4724,6 +4740,7 @@ void CMD_Maximize(F_CMD_ARGS)
 	Bool grow_left = False;
 	Bool grow_right = False;
 	Bool do_force_maximize = False;
+	Bool do_forget = False;
 	Bool is_screen_given = False;
 	Bool ignore_working_area = False;
 	int layers[2] = { -1, -1 };
@@ -4835,7 +4852,16 @@ void CMD_Maximize(F_CMD_ARGS)
 	/* parse first parameter */
 	val1_unit = scr_w;
 	token = PeekToken(action, &taction);
-	if (token && StrEquals(token, "grow"))
+	if (token && StrEquals(token, "forget"))
+	{
+		if (!IS_MAXIMIZED(fw))
+		{
+			return;
+		}
+		do_forget = True;
+		do_force_maximize = True;
+	}
+	else if (token && StrEquals(token, "grow"))
 	{
 		grow_left = True;
 		grow_right = True;
@@ -4878,7 +4904,11 @@ void CMD_Maximize(F_CMD_ARGS)
 	/* parse second parameter */
 	val2_unit = scr_h;
 	token = PeekToken(taction, NULL);
-	if (token && StrEquals(token, "grow"))
+	if (do_forget == True)
+	{
+		/* nop */
+	}
+	else if (token && StrEquals(token, "grow"))
 	{
 		grow_up = True;
 		grow_down = True;
@@ -4923,7 +4953,12 @@ void CMD_Maximize(F_CMD_ARGS)
 		page_x, page_y, scr_x, scr_y, scr_w, scr_h);
 #endif
 
-	if (IS_MAXIMIZED(fw) && !do_force_maximize)
+	if (do_forget == True)
+	{
+		fw->g.normal = fw->g.max;
+		unmaximize_fvwm_window(fw);
+	}
+	else if (IS_MAXIMIZED(fw) && !do_force_maximize)
 	{
 		unmaximize_fvwm_window(fw);
 	}

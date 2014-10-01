@@ -176,6 +176,9 @@ int main(int argc, char **argv)
 
   FlocaleInit(LC_CTYPE, "", "", "FvwmPager");
 
+  /* Tell the FEvent module an event type that is not used by fvwm. */
+  fev_init_invalid_event_type(KeymapNotify);
+
   /* Save our program  name - for error messages */
   MyName = GetFileNameFromPath(argv[0]);
 
@@ -1188,7 +1191,7 @@ void list_window_name(unsigned long *body,unsigned long type)
 	   && !(MiniIcons && t->mini_icon.picture)) {
 	if (t->PagerView)
 	  XClearArea(dpy, t->PagerView, 0, 0, 0, 0, True);
-	if (t->IconView);
+	if (t->IconView)
 	  XClearArea(dpy, t->IconView, 0, 0, 0, 0, True);
       }
       if (ShowBalloons && BalloonView)
@@ -1235,7 +1238,7 @@ void list_icon_name(unsigned long *body)
 	   && !(MiniIcons && t->mini_icon.picture)) {
 	if (t->PagerView)
 	  XClearArea(dpy, t->PagerView, 0, 0, 0, 0, True);
-	if (t->IconView);
+	if (t->IconView)
 	  XClearArea(dpy, t->IconView, 0, 0, 0, 0, True);
       }
     }
@@ -1262,7 +1265,7 @@ void list_mini_icon(unsigned long *body)
     if (MiniIcons && t->mini_icon.picture) {
       if (t->PagerView)
 	XClearArea(dpy, t->PagerView, 0, 0, 0, 0, True);
-      if (t->IconView);
+      if (t->IconView)
 	XClearArea(dpy, t->IconView, 0, 0, 0, 0, True);
     }
   }

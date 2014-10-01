@@ -169,7 +169,6 @@ static void get_resize_decor_gravities_one_axis(
 	frame_move_resize_mode axis_mode, direction_t neg_dir,
 	direction_t pos_dir, int is_moving)
 {
-
 	int title_grav;
 	int neg_grav;
 	int pos_grav;
@@ -207,7 +206,9 @@ static void get_resize_decor_gravities_one_axis(
 		ret_grav->client_grav = neg_grav;
 		break;
 	case FRAME_MR_DONT_DRAW:
+	default:
 		/* can not happen, just a dummy to keep -Wall happy */
+		ret_grav->client_grav = pos_grav;
 		break;
 	}
 	ret_grav->parent_grav = ret_grav->client_grav;
@@ -433,8 +434,11 @@ static void __frame_setup_window(
 	}
 	/* get things updated */
 	XFlush(dpy);
-	/* inform the modules of the change */
-	BroadcastConfig(M_CONFIGURE_WINDOW,fw);
+	if (is_moved || is_resized)
+	{
+		/* inform the modules of the change */
+		BroadcastConfig(M_CONFIGURE_WINDOW,fw);
+	}
 
 	return;
 }
@@ -1938,13 +1942,13 @@ void frame_free_move_resize_args(
 	}
 	update_absolute_geometry(fw);
 	frame_reparent_hide_windows(Scr.NoFocusWin);
-	if (mra->w_with_focus != None)
+	if (mra->w_with_focus != None && FP_IS_LENIENT(FW_FOCUS_POLICY(fw)))
 	{
 		/* domivogt (28-Dec-1999): For some reason the XMoveResize() on
 		 * the frame window removes the input focus from the client
 		 * window.  I have no idea why, but if we explicitly restore
 		 * the focus here everything works fine. */
-		FOCUS_SET(mra->w_with_focus);
+		FOCUS_SET(mra->w_with_focus, fw);
 	}
 	if (mra->flags.do_update_shape)
 	{

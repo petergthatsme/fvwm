@@ -53,6 +53,7 @@
 
 #include <stdio.h>
 #include <unistd.h>
+#include <assert.h>
 #include <X11/Xatom.h>
 
 #include "libs/ftime.h"
@@ -111,6 +112,10 @@
 
 #define CR_MOVERESIZE_MASK (CWX | CWY | CWWidth | CWHeight | CWBorderWidth)
 
+#define DEBUG_GLOBALLY_ACTIVE 1
+
+#define MAX_NUM_WEED_EVENT_TYPES 40
+
 /* ---------------------------- local macros ------------------------------- */
 
 /* ---------------------------- imports ------------------------------------ */
@@ -148,6 +153,24 @@ typedef struct event_group
 	PFEH *jump_table;
 	struct event_group *next;
 } event_group_t;
+
+typedef struct
+{
+	int num_event_types;
+	int event_types[MAX_NUM_WEED_EVENT_TYPES];
+} _weed_event_type_arg;
+
+typedef struct
+{
+	long event_mask;
+} _weed_window_mask_events_arg;
+
+typedef struct
+{
+	Window w;
+	XEvent *last_cr_event;
+	int count;
+} _merge_cr_args;
 
 /* ---------------------------- forward declarations ----------------------- */
 
@@ -254,30 +277,104 @@ static Bool test_withdraw_request(
 	return rc;
 }
 
-Bool test_button_event(
-	Display *display, XEvent *event, XPointer arg)
+static int _pred_weed_accumulate_expose(
+	Display *display, XEvent *ev, XPointer arg)
 {
-	if (event->type == ButtonPress || event->type == ButtonRelease)
+	XEvent *em = (XEvent *)arg;
+
+	if (ev->type != Expose)
 	{
-		return True;
+		return 0;
+	}
+	{
+		int x0;
+		int x1;
+
+		x1 = max(
+			ev->xexpose.x + ev->xexpose.width,
+			em->xexpose.x + em->xexpose.width);
+		x0 = min(em->xexpose.x, ev->xexpose.x);
+		em->xexpose.x = x0;
+		em->xexpose.width = x1 - x0;
+	}
+	{
+		int y0;
+		int y1;
+
+		y1 = max(
+			ev->xexpose.y + ev->xexpose.height,
+			em->xexpose.y + em->xexpose.height);
+		y0 = min(em->xexpose.y, ev->xexpose.y);
+		em->xexpose.y = y0;
+		em->xexpose.height = y1 - y0;
 	}
 
-	return False;
+	return 1;
 }
 
-Bool test_typed_window_event(
+static int _pred_weed_handle_expose(
 	Display *display, XEvent *event, XPointer arg)
 {
-	test_typed_window_event_args *ta = (test_typed_window_event_args *)arg;
-
-	if (event->xany.window == ta->w &&
-	    event->xany.type == ta->event_type &&
-	    event->xproperty.atom == ta->atom)
+	if (event->type == Expose)
 	{
-		return True;
+		dispatch_event(event);
+		return 1;
+	}
+	else
+	{
+		return 0;
+	}
+}
+
+static int _pred_weed_event_type(
+	Display *display, XEvent *event, XPointer arg)
+{
+	_weed_event_type_arg *args = (_weed_event_type_arg *)arg;
+	int i;
+
+	for (i = 0; i < args->num_event_types; i++)
+	{
+		if (event->type == args->event_types[i])
+		{
+			/* invalidate event and continue weeding */
+			return 1;
+		}
 	}
 
-	return False;
+	/* keep event and continue weeding */
+	return 0;
+}
+
+static int _pred_flush_property_notify_weed(
+	Display *display, XEvent *event, XPointer arg)
+{
+	flush_property_notify_args *args =
+		(flush_property_notify_args *)arg;
+	int does_match_window;
+
+	does_match_window = (
+		FEV_HAS_EVENT_WINDOW(event->type) &&
+		event->xany.window == args->w) ? 1 : 0;
+	if (
+		does_match_window &&
+		event->type == args->event_type &&
+		event->xproperty.atom == args->atom)
+	{
+		/* invalidate event and continue weeding */
+		return 1;
+	}
+	else if (
+		args->do_stop_at_event_type &&
+		event->type == args->stop_at_event_type && (
+			!FEV_HAS_EVENT_WINDOW(args->stop_at_event_type) ||
+			does_match_window))
+	{
+		/* keep event and stop weeding */
+		return 2;
+	}
+
+	/* keep event and continue weeding */
+	return 0;
 }
 
 static Bool test_resizing_event(
@@ -319,8 +416,9 @@ static Bool test_resizing_event(
 	return rc;
 }
 
-static inline void __handle_cr_on_unmanaged(XConfigureRequestEvent *cre)
+static inline void _handle_cr_on_unmanaged(XEvent *e)
 {
+	XConfigureRequestEvent *cre = &e->xconfigurerequest;
 	XWindowChanges xwc;
 	unsigned long xwcm;
 
@@ -335,9 +433,9 @@ static inline void __handle_cr_on_unmanaged(XConfigureRequestEvent *cre)
 	return;
 }
 
-static inline void __handle_cr_on_icon(
-	XConfigureRequestEvent *cre, FvwmWindow *fw)
+static inline void _handle_cr_on_icon(XEvent *e, FvwmWindow *fw)
 {
+	XConfigureRequestEvent *cre = &e->xconfigurerequest;
 	XWindowChanges xwc;
 	unsigned long xwcm;
 
@@ -393,7 +491,7 @@ static inline void __handle_cr_on_icon(
 	return;
 }
 
-static inline void __handle_cr_on_shaped(FvwmWindow *fw)
+static inline void _handle_cr_on_shaped(FvwmWindow *fw)
 {
 	/* suppress compiler warnings w/o shape extension */
 	int i = 0;
@@ -415,9 +513,10 @@ static inline void __handle_cr_on_shaped(FvwmWindow *fw)
 	return;
 }
 
-static inline void __handle_cr_restack(
-	int *ret_do_send_event, XConfigureRequestEvent *cre, FvwmWindow *fw)
+static inline void _handle_cr_restack(
+	int *ret_do_send_event, XEvent *e, FvwmWindow *fw)
 {
+	XConfigureRequestEvent *cre = &e->xconfigurerequest;
 	XWindowChanges xwc;
 	unsigned long xwcm;
 	FvwmWindow *fw2 = NULL;
@@ -515,10 +614,11 @@ static inline void __handle_cr_restack(
 	return;
 }
 
-static inline void __cr_get_static_position(
-	rectangle *ret_g, FvwmWindow *fw, XConfigureRequestEvent *cre,
-	size_borders *b)
+static inline void _cr_get_static_position(
+	rectangle *ret_g, FvwmWindow *fw, XEvent *e, size_borders *b)
 {
+	XConfigureRequestEvent *cre = &e->xconfigurerequest;
+
 	if (cre->value_mask & CWX)
 	{
 		ret_g->x = cre->x - b->top_left.width;
@@ -539,10 +639,10 @@ static inline void __cr_get_static_position(
 	return;
 }
 
-static inline void __cr_get_grav_position(
-	rectangle *ret_g, FvwmWindow *fw, XConfigureRequestEvent *cre,
-	size_borders *b)
+static inline void _cr_get_grav_position(
+	rectangle *ret_g, FvwmWindow *fw, XEvent *e, size_borders *b)
 {
+	XConfigureRequestEvent *cre = &e->xconfigurerequest;
 	int grav_x;
 	int grav_y;
 
@@ -569,9 +669,10 @@ static inline void __cr_get_grav_position(
 
 /* Try to detect whether the application uses the ICCCM way of moving its
  * window or the traditional way, always assuming StaticGravity. */
-static inline void __cr_detect_icccm_move(
-	FvwmWindow *fw, XConfigureRequestEvent *cre, size_borders *b)
+static inline void _cr_detect_icccm_move(
+	FvwmWindow *fw, XEvent *e, size_borders *b)
 {
+	XConfigureRequestEvent *cre = &e->xconfigurerequest;
 	rectangle grav_g;
 	rectangle static_g;
 	rectangle dg_g;
@@ -654,8 +755,8 @@ static inline void __cr_detect_icccm_move(
 		}
 		return;
 	}
-	__cr_get_grav_position(&grav_g, fw, cre, b);
-	__cr_get_static_position(&static_g, fw, cre, b);
+	_cr_get_grav_position(&grav_g, fw, e, b);
+	_cr_get_static_position(&static_g, fw, e, b);
 	if (static_g.x == grav_g.x)
  	{
 		/* both methods have the same result; ignore */
@@ -821,7 +922,6 @@ static inline void __cr_detect_icccm_move(
 	return;
 }
 
-#define EXPERIMENTAL_ANTI_RACE_CONDITION_CODE
 /* This is not a good idea because this interferes with changes in the size
  * hints of the window.  However, it is impossible to be completely safe here.
  * For example, if the client changes the size inc, then resizes the size of
@@ -830,140 +930,157 @@ static inline void __cr_detect_icccm_move(
  * wrong one in the ConfigureRequest calculations. */
 /* dv (31 Mar 2002): The code now handles these situations, so enable it
  * again. */
-#ifdef EXPERIMENTAL_ANTI_RACE_CONDITION_CODE
-static inline int __merge_cr_moveresize(
-	const evh_args_t *ea, XConfigureRequestEvent *cre, FvwmWindow *fw,
-	size_borders *b)
+static int _pred_merge_cr(Display *display, XEvent *event, XPointer arg)
 {
-	int cn_count = 0;
-	XEvent e;
-	XConfigureRequestEvent *ecre;
-	check_if_event_args args;
+	_merge_cr_args *args = (_merge_cr_args *)arg;
 
-	args.w = cre->window;
-	args.do_return_true = False;
-	args.do_return_true_cr = True;
-	args.cr_value_mask = CR_MOVERESIZE_MASK;
-	args.ret_does_match = False;
-	args.ret_type = 0;
-
-	for (cn_count = 0; 1; )
+	switch (event->type)
 	{
-		unsigned long vma;
-		unsigned long vmo;
-		unsigned long xm;
-		unsigned long ym;
-		evh_args_t ea2;
-		exec_context_changes_t ecc;
+	case ConfigureRequest:
+	{
+		XConfigureRequestEvent *ecr = &event->xconfigurerequest;
+		XConfigureRequestEvent *lcr =
+			&args->last_cr_event->xconfigurerequest;
 
-		FCheckPeekIfEvent(
-			dpy, &e, test_resizing_event, (XPointer)&args);
-		ecre = &e.xconfigurerequest;
-		if (args.ret_does_match == False)
+		if (event->xconfigurerequest.window != args->w)
 		{
-			break;
+			/* no match, keep looking */
+			return 0;
 		}
-		else if (args.ret_type == PropertyNotify)
-		{
-			/* Can't merge events with a PropertyNotify in
-			 * between.  The event is still on the queue. */
-			break;
-		}
-		else if (args.ret_type != ConfigureRequest)
-		{
-			/* not good. unselected event type! */
-			continue;
-		}
-		/* Event was not yet removed from the queue but stored in e. */
-		xm = CWX | CWWidth;
-		ym = CWY | CWHeight;
-		vma = cre->value_mask & ecre->value_mask;
-		vmo = cre->value_mask | ecre->value_mask;
-		if (((vma & xm) == 0 && (vmo & xm) == xm) ||
-		    ((vma & ym) == 0 && (vmo & ym) == ym))
-		{
-			/* can't merge events since location of window might
-			 * get screwed up. */
-			break;
-		}
-		/* Finally remove the event from the queue */
-		FCheckIfEvent(dpy, &e, test_resizing_event, (XPointer)&args);
-		/* partially handle the event */
-		ecre->value_mask &= ~args.cr_value_mask;
-		ea2.exc = exc_clone_context(ea->exc, &ecc, ECC_ETRIGGER);
-		HandleConfigureRequest(&ea2);
-		exc_destroy_context(ea2.exc);
 		/* collect the size/position changes */
-		if (ecre->value_mask & CWX)
+		if (lcr->value_mask & CWX)
 		{
-			cre->x = ecre->x;
+			ecr->x = lcr->x;
 		}
-		if (ecre->value_mask & CWY)
+		if (lcr->value_mask & CWY)
 		{
-			cre->y = ecre->y;
+			ecr->y = lcr->y;
 		}
-		if (ecre->value_mask & CWWidth)
+		if (lcr->value_mask & CWWidth)
 		{
-			cre->width = ecre->width;
+			ecr->width = lcr->width;
 		}
-		if (ecre->value_mask & CWHeight)
+		if (lcr->value_mask & CWHeight)
 		{
-			cre->height = ecre->height;
+			ecr->height = lcr->height;
 		}
-		if (ecre->value_mask & CWBorderWidth)
+		if (lcr->value_mask & CWBorderWidth)
 		{
-			cre->border_width = ecre->border_width;
+			ecr->border_width = lcr->border_width;
 		}
-		cre->value_mask |= (ecre->value_mask & CR_MOVERESIZE_MASK);
-		cn_count++;
+		/* add to new event and remove from old event */
+		ecr->value_mask |= (lcr->value_mask & CR_MOVERESIZE_MASK);
+		lcr->value_mask &= ~CR_MOVERESIZE_MASK;
+		if (lcr->value_mask == 0)
+		{
+			/* The event has no useful contents anymore. */
+			FEV_INVALIDATE_EVENT(args->last_cr_event);
+		}
+		args->last_cr_event = event;
+		args->count++;
+
+		/* don't drop the current event and continue weeding */
+		return 0;
 	}
-
-	return cn_count;
+	case PropertyNotify:
+		if (
+			event->xproperty.window == args->w &&
+			event->xproperty.atom != XA_WM_NORMAL_HINTS)
+		{
+			/* ConfigureRequest events cannot be merged past
+			 * changes of the size hints. */
+			/* don't merge and stop weeding */
+			return 2;
+		}
+		else
+		{
+			/* PropertyNotify for another window, or the changed
+			 * property does not interfere with merging. */
+			/* keep looking */
+			return 0;
+		}
+	default:
+		/* Other events do not interfer with merging. */
+		/* keep looking */
+		return 0;
+	}
 }
-#endif
 
-static inline int __handle_cr_on_client(
-	int *ret_do_send_event, XConfigureRequestEvent cre,
-	const evh_args_t *ea, FvwmWindow *fw, Bool force, int force_gravity)
+static inline int _merge_cr_moveresize(
+	const evh_args_t *ea, XEvent *ev, FvwmWindow *fw, size_borders *b)
 {
+	_merge_cr_args args;
+
+	memset(&args, 0, sizeof(args));
+	args.w = ev->xconfigurerequest.window;
+	args.last_cr_event = ev;
+	FWeedIfEvents(dpy, _pred_merge_cr, (XPointer)&args);
+
+#if 1 /*!!!*/
+	if (args.count > 0)
+	{
+		fprintf(stderr, "%s: merged %d cr events\n", __func__, args.count);
+	}
+#endif
+	/* use the count from the structure, not the return value of
+	 * FWeedIfEvents() because the predicate has a different way of weeding
+	 * and the return value is always zero. */
+	return args.count;
+}
+
+static inline int _handle_cr_on_client(
+	int *ret_do_send_event, XEvent *e, const evh_args_t *ea,
+	FvwmWindow *fw, Bool force, int force_gravity)
+{
+	XConfigureRequestEvent *cre = &e->xconfigurerequest;
 	rectangle current_g;
 	rectangle new_g;
 	rectangle d_g;
 	size_rect constr_dim;
 	size_rect oldnew_dim;
 	size_borders b;
-	int cn_count = 0;
 	int gravity;
 
 	if (ea)
 	{
-		cre = ea->exc->x.etrigger->xconfigurerequest;
+		cre = &ea->exc->x.etrigger->xconfigurerequest;
 	}
-	if ((cre.value_mask & (CWWidth | CWHeight | CWX | CWY)) == 0)
+	if (cre->value_mask & CWBorderWidth)
+	{
+		/* for restoring */
+		fw->attr_backup.border_width = cre->border_width;
+	}
+	if ((cre->value_mask & (CWWidth | CWHeight | CWX | CWY)) == 0)
 	{
 		return 0;
 	}
 
 	get_window_borders(fw, &b);
-#ifdef EXPERIMENTAL_ANTI_RACE_CONDITION_CODE
 	/* Merge all pending ConfigureRequests for the window into a single
 	 * event.  However, we can not do this if the window uses the motion
 	 * method autodetection because the merged event might confuse the
 	 * detection code. */
 	if (ea && CR_MOTION_METHOD(fw) != CR_MOTION_METHOD_AUTO)
 	{
-		cn_count = __merge_cr_moveresize(ea, &cre, fw, &b);
+		int count;
+
+		count = _merge_cr_moveresize(ea, e, fw, &b);
+		if (count > 0)
+		{
+			/* the event has been merged into a later one, do
+			 * nothing */
+			return 0;
+		}
 	}
-#endif
 #if 0
 	fprintf(stderr,
 		"cre: %d(%d) %d(%d) %d(%d)x%d(%d) fw 0x%08x w 0x%08x "
 		"ew 0x%08x  '%s'\n",
-		cre.x, (int)(cre.value_mask & CWX),
-		cre.y, (int)(cre.value_mask & CWY),
-		cre.width, (int)(cre.value_mask & CWWidth),
-		cre.height, (int)(cre.value_mask & CWHeight),
-		(int)FW_W_FRAME(fw), (int)FW_W(fw), (int)cre.window,
+		cre->x, (int)(cre->value_mask & CWX),
+		cre->y, (int)(cre->value_mask & CWY),
+		cre->width, (int)(cre->value_mask & CWWidth),
+		cre->height, (int)(cre->value_mask & CWHeight),
+		(int)FW_W_FRAME(fw), (int)FW_W(fw), (int)cre->window,
 		(fw->name.name) ? fw->name.name : "");
 #endif
 	/* Don't modify frame_g fields before calling SetupWindow! */
@@ -979,46 +1096,46 @@ static inline int __handle_cr_on_client(
 	if (!HAS_OVERRIDE_SIZE_HINTS(fw) && (fw->hints.flags & PMaxSize))
 	{
 		/* Java workaround */
-		if (cre.height > fw->hints.max_height &&
+		if (cre->height > fw->hints.max_height &&
 		    fw->hints.max_height <= BROKEN_MAXSIZE_LIMIT)
 		{
 			fw->hints.max_height = DEFAULT_MAX_MAX_WINDOW_HEIGHT;
-			cre.value_mask |= CWHeight;
+			cre->value_mask |= CWHeight;
 		}
-		if (cre.width > fw->hints.max_width &&
+		if (cre->width > fw->hints.max_width &&
 		    fw->hints.max_width <= BROKEN_MAXSIZE_LIMIT)
 		{
 			fw->hints.max_width = DEFAULT_MAX_MAX_WINDOW_WIDTH;
-			cre.value_mask |= CWWidth;
+			cre->value_mask |= CWWidth;
 		}
 	}
 	if (!HAS_OVERRIDE_SIZE_HINTS(fw) && (fw->hints.flags & PMinSize))
 	{
-		if (cre.width < fw->hints.min_width &&
+		if (cre->width < fw->hints.min_width &&
 		    fw->hints.min_width >= BROKEN_MINSIZE_LIMIT)
 		{
 			fw->hints.min_width = 1;
-			cre.value_mask |= CWWidth;
+			cre->value_mask |= CWWidth;
 		}
-		if (cre.height < fw->hints.min_height &&
+		if (cre->height < fw->hints.min_height &&
 		    fw->hints.min_height >= BROKEN_MINSIZE_LIMIT)
 		{
 			fw->hints.min_height = 1;
-			cre.value_mask |= CWHeight;
+			cre->value_mask |= CWHeight;
 		}
 	}
 	if (IS_SHADED(fw) ||
 	    !is_function_allowed(F_MOVE, NULL, fw, RQORIG_PROGRAM, False))
 	{
 		/* forbid shaded applications to move their windows */
-		cre.value_mask &= ~(CWX | CWY);
+		cre->value_mask &= ~(CWX | CWY);
 		/* resend the old geometry */
 		*ret_do_send_event = 1;
 	}
 	if (IS_MAXIMIZED(fw))
 	{
 		/* dont allow clients to resize maximized windows */
-		cre.value_mask &= ~(CWWidth | CWHeight);
+		cre->value_mask &= ~(CWWidth | CWHeight);
 		/* resend the old geometry */
 		*ret_do_send_event = 1;
 		d_g.width = 0;
@@ -1028,18 +1145,13 @@ static inline int __handle_cr_on_client(
 		!is_function_allowed(
 			F_RESIZE, NULL, fw, RQORIG_PROGRAM, False))
 	{
-		cre.value_mask &= ~(CWWidth | CWHeight);
+		cre->value_mask &= ~(CWWidth | CWHeight);
 		*ret_do_send_event = 1;
 	}
 
-	if (cre.value_mask & CWBorderWidth)
-	{
-		/* for restoring */
-		fw->attr_backup.border_width = cre.border_width;
-	}
 	if (!force && CR_MOTION_METHOD(fw) == CR_MOTION_METHOD_AUTO)
 	{
-		__cr_detect_icccm_move(fw, &cre, &b);
+		_cr_detect_icccm_move(fw, e, &b);
 	}
 	if (force_gravity > ForgetGravity && force_gravity <= StaticGravity)
 	{
@@ -1064,7 +1176,7 @@ static inline int __handle_cr_on_client(
 	{
 		current_g = fw->g.frame;
 	}
-	if (!(cre.value_mask & (CWX | CWY)))
+	if (!(cre->value_mask & (CWX | CWY)))
 	{
 		/* nothing */
 	}
@@ -1078,15 +1190,15 @@ static inline int __handle_cr_on_client(
 		int grav_y;
 
 		gravity_get_offsets(gravity, &grav_x, &grav_y);
-		if (cre.value_mask & CWX)
+		if (cre->value_mask & CWX)
 		{
-			ref_x = cre.x -
+			ref_x = cre->x -
 				((grav_x + 1) * b.total_size.width) / 2;
 			d_g.x = ref_x - current_g.x;
 		}
-		if (cre.value_mask & CWY)
+		if (cre->value_mask & CWY)
 		{
-			ref_y = cre.y -
+			ref_y = cre->y -
 				((grav_y + 1) * b.total_size.height) / 2;
 			d_g.y = ref_y - current_g.y;
 		}
@@ -1094,22 +1206,22 @@ static inline int __handle_cr_on_client(
 	else /* ..._USE_GRAV or ..._AUTO */
 	{
 		/* default: traditional cr handling */
-		if (cre.value_mask & CWX)
+		if (cre->value_mask & CWX)
 		{
-			d_g.x = cre.x - current_g.x - b.top_left.width;
+			d_g.x = cre->x - current_g.x - b.top_left.width;
 		}
-		if (cre.value_mask & CWY)
+		if (cre->value_mask & CWY)
 		{
-			d_g.y = cre.y - current_g.y - b.top_left.height;
+			d_g.y = cre->y - current_g.y - b.top_left.height;
 		}
 	}
 
-	if (cre.value_mask & CWHeight)
+	if (cre->value_mask & CWHeight)
 	{
-		if (cre.height <
+		if (cre->height <
 		    (WINDOW_FREAKED_OUT_SIZE - b.total_size.height))
 		{
-			d_g.height = cre.height -
+			d_g.height = cre->height -
 				(current_g.height - b.total_size.height);
 		}
 		else
@@ -1124,11 +1236,11 @@ static inline int __handle_cr_on_client(
 			*ret_do_send_event = 1;
 		}
 	}
-	if (cre.value_mask & CWWidth)
+	if (cre->value_mask & CWWidth)
 	{
-		if (cre.width < (WINDOW_FREAKED_OUT_SIZE - b.total_size.width))
+		if (cre->width < (WINDOW_FREAKED_OUT_SIZE - b.total_size.width))
 		{
-			d_g.width = cre.width -
+			d_g.width = cre->width -
 				(current_g.width - b.total_size.width);
 		}
 		else
@@ -1154,29 +1266,29 @@ static inline int __handle_cr_on_client(
 		CS_UPDATE_MAX_DEFECT);
 	d_g.width += (constr_dim.width - oldnew_dim.width);
 	d_g.height += (constr_dim.height - oldnew_dim.height);
-	if ((cre.value_mask & CWX) && d_g.width)
+	if ((cre->value_mask & CWX) && d_g.width)
 	{
 		new_g.x = current_g.x + d_g.x;
 		new_g.width = current_g.width + d_g.width;
 	}
-	else if ((cre.value_mask & CWX) && !d_g.width)
+	else if ((cre->value_mask & CWX) && !d_g.width)
 	{
 		new_g.x = current_g.x + d_g.x;
 	}
-	else if (!(cre.value_mask & CWX) && d_g.width)
+	else if (!(cre->value_mask & CWX) && d_g.width)
 	{
 		gravity_resize(gravity, &new_g, d_g.width, 0);
 	}
-	if ((cre.value_mask & CWY) && d_g.height)
+	if ((cre->value_mask & CWY) && d_g.height)
 	{
 		new_g.y = current_g.y + d_g.y;
 		new_g.height = current_g.height + d_g.height;
 	}
-	else if ((cre.value_mask & CWY) && !d_g.height)
+	else if ((cre->value_mask & CWY) && !d_g.height)
 	{
 		new_g.y = current_g.y + d_g.y;
 	}
-	else if (!(cre.value_mask & CWY) && d_g.height)
+	else if (!(cre->value_mask & CWY) && d_g.height)
 	{
 		gravity_resize(gravity, &new_g, 0, d_g.height);
 	}
@@ -1189,7 +1301,7 @@ static inline int __handle_cr_on_client(
 		 * ConfigureNotify. */
 		*ret_do_send_event = 1;
 	}
-	else if ((cre.value_mask & CWX) || (cre.value_mask & CWY) ||
+	else if ((cre->value_mask & CWX) || (cre->value_mask & CWY) ||
 		 d_g.width || d_g.height)
 	{
 		if (IS_SHADED(fw))
@@ -1212,16 +1324,18 @@ static inline int __handle_cr_on_client(
 	SET_FORCE_NEXT_CR(fw, 0);
 	SET_FORCE_NEXT_PN(fw, 0);
 
-	return cn_count;
+	return 1;
 }
 
-void __handle_configure_request(
-	XConfigureRequestEvent cre, const evh_args_t *ea, FvwmWindow *fw,
+void _handle_configure_request(
+	XEvent *e, const evh_args_t *ea, FvwmWindow *fw,
 	Bool force, int force_gravity)
 {
+	XConfigureRequestEvent *cre = &e->xconfigurerequest;
 	int do_send_event = 0;
 	int cn_count = 0;
 
+	fev_sanitise_configure_request(cre);
 	/* According to the July 27, 1988 ICCCM draft, we should ignore size
 	 * and position fields in the WM_NORMAL_HINTS property when we map a
 	 * window. Instead, we'll read the current geometry.  Therefore, we
@@ -1229,29 +1343,29 @@ void __handle_configure_request(
 	 * never been mapped. */
 	if (fw == NULL)
 	{
-		__handle_cr_on_unmanaged(&cre);
+		_handle_cr_on_unmanaged(e);
 		return;
 	}
-	if (cre.window == FW_W_ICON_TITLE(fw) ||
-	    cre.window == FW_W_ICON_PIXMAP(fw))
+	if (cre->window == FW_W_ICON_TITLE(fw) ||
+	    cre->window == FW_W_ICON_PIXMAP(fw))
 	{
-		__handle_cr_on_icon(&cre, fw);
+		_handle_cr_on_icon(e, fw);
 	}
 	if (FShapesSupported)
 	{
-		__handle_cr_on_shaped(fw);
+		_handle_cr_on_shaped(fw);
 	}
-	if (fw != NULL && cre.window == FW_W(fw))
+	if (fw != NULL && cre->window == FW_W(fw))
 	{
-		cn_count = __handle_cr_on_client(
-			&do_send_event, cre, ea, fw, force, force_gravity);
+		cn_count = _handle_cr_on_client(
+			&do_send_event, e, ea, fw, force, force_gravity);
 	}
 	/* Stacking order change requested.  Handle this *after* geometry
 	 * changes, since we need the new geometry in occlusion calculations */
-	if ((cre.value_mask & CWStackMode) &&
+	if ((cre->value_mask & CWStackMode) &&
 	    (!DO_IGNORE_RESTACK(fw) || force))
 	{
-		__handle_cr_restack(&do_send_event, &cre, fw);
+		_handle_cr_restack(&do_send_event, e, fw);
 	}
 #if 1
 	/* This causes some ddd windows not to be drawn properly. Reverted back
@@ -1281,7 +1395,7 @@ void __handle_configure_request(
 	return;
 }
 
-static Bool __predicate_button_click(
+static Bool _pred_button_click(
 	Display *display, XEvent *event, XPointer arg)
 {
 	if (event->type == ButtonPress || event->type == ButtonRelease)
@@ -1329,7 +1443,7 @@ static Bool __test_for_motion(int x0, int y0)
 			/* the pointer has moved */
 			return True;
 		}
-		if (FCheckPeekIfEvent(dpy, &e, __predicate_button_click, NULL))
+		if (FCheckPeekIfEvent(dpy, &e, _pred_button_click, NULL))
 		{
 			/* click in the future */
 			return False;
@@ -1717,11 +1831,12 @@ static void __handle_bpress_on_managed(const exec_context_t *exc)
 /* restore focus stolen by unmanaged */
 static void __refocus_stolen_focus_win(const evh_args_t *ea)
 {
-	FOCUS_SET(Scr.StolenFocusWin);
+	FOCUS_SET(Scr.StolenFocusWin, Scr.StolenFocusFvwmWin);
 	ea->exc->x.etrigger->xfocus.window = Scr.StolenFocusWin;
 	ea->exc->x.etrigger->type = FocusIn;
 	Scr.UnknownWinFocused = None;
 	Scr.StolenFocusWin = None;
+	Scr.StolenFocusFvwmWin = NULL;
 	dispatch_event(ea->exc->x.etrigger);
 
 	return;
@@ -1884,21 +1999,21 @@ void HandleColormapNotify(const evh_args_t *ea)
 
 void HandleConfigureRequest(const evh_args_t *ea)
 {
-	const XEvent *te = ea->exc->x.etrigger;
-	XConfigureRequestEvent cre;
+	XEvent *te = ea->exc->x.etrigger;
+	XConfigureRequestEvent *cre;
 	FvwmWindow *fw = ea->exc->w.fw;
 
 	DBUG("HandleConfigureRequest", "Routine Entered");
 
-	cre = te->xconfigurerequest;
+	cre = &te->xconfigurerequest;
 	/* te->xany.window is te->.xconfigurerequest.parent, so the context
 	 * window may be wrong. */
-	if (XFindContext(dpy, cre.window, FvwmContext, (caddr_t *)&fw) ==
+	if (XFindContext(dpy, cre->window, FvwmContext, (caddr_t *)&fw) ==
 	    XCNOENT)
 	{
 		fw = NULL;
 	}
-	__handle_configure_request(cre, ea, fw, False, ForgetGravity);
+	_handle_configure_request(te, ea, fw, False, ForgetGravity);
 
 	return;
 }
@@ -1936,7 +2051,7 @@ void HandleEnterNotify(const evh_args_t *ea)
 
 	DBUG("HandleEnterNotify", "Routine Entered");
 	ewp = &te->xcrossing;
-ENTER_DBG((stderr, "++++++++ en (%d): fw 0x%08x w 0x%08x sw 0x%08xmode 0x%x detail 0x%x '%s'\n", ++ecount, (int)fw, (int)ewp->window, (int)ewp->subwindow, ewp->mode, ewp->detail, fw?fw->visible_name:"(none)"));
+ENTER_DBG((stderr, "++++++++ en (%d): fw %p w 0x%08x sw 0x%08x mode 0x%x detail 0x%x '%s'\n", ++ecount, fw, (int)ewp->window, (int)ewp->subwindow, ewp->mode, ewp->detail, fw?fw->visible_name:"(none)"));
 
 	if (
 		ewp->window == Scr.Root &&
@@ -2131,7 +2246,7 @@ ENTER_DBG((stderr, "en: exit: found LeaveNotify\n"));
 		}
 		else if (
 			Scr.UnknownWinFocused != None && sf != NULL &&
-			FW_W(sf) == Scr.StolenFocusWin)
+			sf == Scr.StolenFocusFvwmWin)
 		{
 			__refocus_stolen_focus_win(ea);
 		}
@@ -2156,7 +2271,7 @@ ENTER_DBG((stderr, "en: exit: found LeaveNotify\n"));
 		if (
 			Scr.UnknownWinFocused != None &&
 			(sf = get_focus_window()) != NULL &&
-			FW_W(sf) == Scr.StolenFocusWin)
+			sf == Scr.StolenFocusFvwmWin)
 		{
 			__refocus_stolen_focus_win(ea);
 		}
@@ -2267,7 +2382,7 @@ ENTER_DBG((stderr, "en: set mousey focus\n"));
 	}
 	if (
 		Scr.UnknownWinFocused != None && sf != NULL &&
-		FW_W(sf) == Scr.StolenFocusWin)
+		sf == Scr.StolenFocusFvwmWin)
 	{
 			__refocus_stolen_focus_win(ea);
 	}
@@ -2375,6 +2490,29 @@ void HandleFocusIn(const evh_args_t *ea)
 	}
 
 	Scr.UnknownWinFocused = None;
+	if (
+		fw && Scr.focus_in_requested_window != fw &&
+		!FP_DO_FOCUS_BY_PROGRAM(FW_FOCUS_POLICY(fw)) &&
+		fw->focus_model == FM_GLOBALLY_ACTIVE)
+	{
+		if (DEBUG_GLOBALLY_ACTIVE)
+		{
+			fprintf(
+				stderr, "prevented globally active fw %p (%s)"
+				" from stealing the focus\n", fw,
+				fw->name.name);
+			fprintf(
+				stderr, "window was %p (%s)\n",
+				Scr.focus_in_pending_window,
+				Scr.focus_in_pending_window ?
+				Scr.focus_in_pending_window->name.name : "");
+		}
+		Scr.focus_in_requested_window = NULL;
+		__refocus_stolen_focus_win(ea);
+
+		return;
+	}
+	Scr.focus_in_pending_window = NULL;
 	if (!fw)
 	{
 		if (w != Scr.NoFocusWin)
@@ -2382,6 +2520,7 @@ void HandleFocusIn(const evh_args_t *ea)
 			Scr.UnknownWinFocused = w;
 			Scr.StolenFocusWin =
 				(ffw_old != NULL) ? FW_W(ffw_old) : None;
+			Scr.StolenFocusFvwmWin = ffw_old;
 			focus_w = w;
 			is_unmanaged_focused = True;
 		}
@@ -2420,6 +2559,12 @@ void HandleFocusIn(const evh_args_t *ea)
 		 IS_FOCUS_CHANGE_BROADCAST_PENDING(fw) ||
 		 fpol_query_allow_user_focus(&FW_FOCUS_POLICY(fw)))
 	{
+		if (w != Scr.NoFocusWin)
+		{
+			Scr.StolenFocusWin = (ffw_old != NULL) ?
+				FW_W(ffw_old) : None;
+			Scr.StolenFocusFvwmWin = ffw_old;
+		}
 		do_force_broadcast = IS_FOCUS_CHANGE_BROADCAST_PENDING(fw);
 		SET_FOCUS_CHANGE_BROADCAST_PENDING(fw, 0);
 		if (fw != Scr.Hilite &&
@@ -2615,7 +2760,7 @@ void HandleLeaveNotify(const evh_args_t *ea)
 
 	DBUG("HandleLeaveNotify", "Routine Entered");
 
-ENTER_DBG((stderr, "-------- ln (%d): fw 0x%08x w 0x%08x sw 0x%08x mode 0x%x detail 0x%x '%s'\n", ++ecount, (int)fw, (int)te->xcrossing.window, (int)te->xcrossing.subwindow, te->xcrossing.mode, te->xcrossing.detail, fw?fw->visible_name:"(none)"));
+ENTER_DBG((stderr, "-------- ln (%d): fw %p w 0x%08x sw 0x%08x mode 0x%x detail 0x%x '%s'\n", ++ecount, fw, (int)te->xcrossing.window, (int)te->xcrossing.subwindow, te->xcrossing.mode, te->xcrossing.detail, fw?fw->visible_name:"(none)"));
 	lwp = &te->xcrossing;
 	if (
 		lwp->window == Scr.Root &&
@@ -2656,7 +2801,7 @@ ENTER_DBG((stderr, "-------- ln (%d): fw 0x%08x w 0x%08x sw 0x%08x mode 0x%x det
 		     lwp->window == FW_W_ICON_TITLE(fw) ||
 		     lwp->window == FW_W_ICON_PIXMAP(fw)))
 		{
-ENTER_DBG((stderr, "ln: *** lgw = 0x%08x\n", (int)fw));
+ENTER_DBG((stderr, "ln: *** lgw = %p\n", fw));
 			xcrossing_last_grab_window = fw;
 		}
 #ifdef FOCUS_EXPANDS_TITLE
@@ -3210,10 +3355,12 @@ void HandleMotionNotify(const evh_args_t *ea)
 
 void HandlePropertyNotify(const evh_args_t *ea)
 {
-	Bool OnThisPage = False;
 	Bool has_icon_changed = False;
 	Bool has_icon_pixmap_hint_changed = False;
 	Bool has_icon_window_hint_changed = False;
+        /* NoName is an extern pointer to a constant "Untitled".
+           See lib/Flocale.c FlocaleFreeNameProperty
+           to see how this initialization causes a problem: */
 	FlocaleNameString new_name = { NoName, NULL };
 	int old_wmhints_flags;
 	const XEvent *te = ea->exc->x.etrigger;
@@ -3308,32 +3455,30 @@ void HandlePropertyNotify(const evh_args_t *ea)
 	{
 		return;
 	}
-	if (XGetGeometry(
-		    dpy, FW_W(fw), &JunkRoot, &JunkX, &JunkY,
-		    (unsigned int*)&JunkWidth, (unsigned int*)&JunkHeight,
-		    (unsigned int*)&JunkBW, (unsigned int*)&JunkDepth) == 0)
-	{
-		return;
-	}
-
-	/*
-	 * Make sure at least part of window is on this page
-	 * before giving it focus...
-	 */
-	OnThisPage = IsRectangleOnThisPage(&(fw->g.frame), fw->Desk);
-
 	switch (te->xproperty.atom)
 	{
 	case XA_WM_TRANSIENT_FOR:
-		flush_property_notify(XA_WM_TRANSIENT_FOR, FW_W(fw));
+	{
 		if (setup_transientfor(fw) == True)
 		{
 			RaiseWindow(fw, False);
 		}
 		break;
-
+	}
 	case XA_WM_NAME:
-		flush_property_notify(XA_WM_NAME, FW_W(fw));
+	{
+		flush_property_notify_stop_at_event_type(
+			te->xproperty.atom, FW_W(fw), 0, 0);
+		if (XGetGeometry(
+			    dpy, FW_W(fw), &JunkRoot, &JunkX, &JunkY,
+			    (unsigned int*)&JunkWidth,
+			    (unsigned int*)&JunkHeight,
+			    (unsigned int*)&JunkBW,
+			    (unsigned int*)&JunkDepth) == 0)
+		{
+			/* Window does not exist anymore. */
+			return;
+		}
 		if (HAS_EWMH_WM_NAME(fw))
 		{
 			return;
@@ -3383,8 +3528,15 @@ void HandlePropertyNotify(const evh_args_t *ea)
 		 * if the icon name is NoName, set the name of the icon to be
 		 * the same as the window
 		 */
-		if (!WAS_ICON_NAME_PROVIDED(fw) || (fw->icon_name.name &&
-			(fw->icon_name.name != fw->name.name)))
+		if (!WAS_ICON_NAME_PROVIDED(fw)
+#if 0
+		    /* dje, reported as causing various dumps.
+		       I tried to debug, but so far haven't even figured out
+		       how to exercise this logic. Mov 9, 2013. */
+		    || (fw->icon_name.name &&
+			(fw->icon_name.name != fw->name.name))
+#endif
+)
 		{
 			fw->icon_name = fw->name;
 			setup_visible_name(fw, True);
@@ -3392,9 +3544,21 @@ void HandlePropertyNotify(const evh_args_t *ea)
 			RedoIconName(fw);
 		}
 		break;
-
+	}
 	case XA_WM_ICON_NAME:
-		flush_property_notify(XA_WM_ICON_NAME, FW_W(fw));
+	{
+		flush_property_notify_stop_at_event_type(
+			te->xproperty.atom, FW_W(fw), 0, 0);
+		if (XGetGeometry(
+			    dpy, FW_W(fw), &JunkRoot, &JunkX, &JunkY,
+			    (unsigned int*)&JunkWidth,
+			    (unsigned int*)&JunkHeight,
+			    (unsigned int*)&JunkBW,
+			    (unsigned int*)&JunkDepth) == 0)
+		{
+			/* Window does not exist anymore. */
+			return;
+		}
 		if (HAS_EWMH_WM_ICON_NAME(fw))
 		{
 			return;
@@ -3438,9 +3602,21 @@ void HandlePropertyNotify(const evh_args_t *ea)
 		RedoIconName(fw);
 		EWMH_SetVisibleName(fw, True);
 		break;
-
+	}
 	case XA_WM_HINTS:
-		flush_property_notify(XA_WM_HINTS, FW_W(fw));
+	{
+		flush_property_notify_stop_at_event_type(
+			te->xproperty.atom, FW_W(fw), 0, 0);
+		if (XGetGeometry(
+			    dpy, FW_W(fw), &JunkRoot, &JunkX, &JunkY,
+			    (unsigned int*)&JunkWidth,
+			    (unsigned int*)&JunkHeight,
+			    (unsigned int*)&JunkBW,
+			    (unsigned int*)&JunkDepth) == 0)
+		{
+			/* Window does not exist anymore. */
+			return;
+		}
 		/* clasen@mathematik.uni-freiburg.de - 02/01/1998 - new -
 		 * the urgency flag is an ICCCM 2.0 addition to the WM_HINTS.
 		 */
@@ -3463,13 +3639,13 @@ void HandlePropertyNotify(const evh_args_t *ea)
 		if ((fw->wmhints->flags & IconPixmapHint) ||
 		    (old_wmhints_flags & IconPixmapHint))
 		{
-ICON_DBG((stderr, "hpn: iph changed (%d) '%s'\n", !!(int)(fw->wmhints->flags & IconPixmapHint), fw->name));
+ICON_DBG((stderr, "hpn: iph changed (%d) '%s'\n", !!(int)(fw->wmhints->flags & IconPixmapHint), fw->name.name));
 			has_icon_pixmap_hint_changed = True;
 		}
 		if ((fw->wmhints->flags & IconWindowHint) ||
 		    (old_wmhints_flags & IconWindowHint))
 		{
-ICON_DBG((stderr, "hpn: iwh changed (%d) '%s'\n", !!(int)(fw->wmhints->flags & IconWindowHint), fw->name));
+ICON_DBG((stderr, "hpn: iwh changed (%d) '%s'\n", !!(int)(fw->wmhints->flags & IconWindowHint), fw->name.name));
 			has_icon_window_hint_changed = True;
 			SET_USE_EWMH_ICON(fw, False);
 		}
@@ -3479,7 +3655,7 @@ ICON_DBG((stderr, "hpn: iwh changed (%d) '%s'\n", !!(int)(fw->wmhints->flags & I
 		{
 			if (ICON_OVERRIDE_MODE(fw) == ICON_OVERRIDE)
 			{
-ICON_DBG((stderr, "hpn: icon override '%s'\n", fw->name));
+ICON_DBG((stderr, "hpn: icon override '%s'\n", fw->name.name));
 				has_icon_changed = False;
 			}
 			else if (ICON_OVERRIDE_MODE(fw) ==
@@ -3490,7 +3666,7 @@ ICON_DBG((stderr, "hpn: icon override '%s'\n", fw->name));
 					if (WAS_ICON_HINT_PROVIDED(fw) ==
 					    ICON_HINT_MULTIPLE)
 					{
-ICON_DBG((stderr, "hpn: using further iph '%s'\n", fw->name));
+ICON_DBG((stderr, "hpn: using further iph '%s'\n", fw->name.name));
 						has_icon_changed = True;
 					}
 					else  if (fw->icon_bitmap_file ==
@@ -3498,7 +3674,7 @@ ICON_DBG((stderr, "hpn: using further iph '%s'\n", fw->name));
 						  fw->icon_bitmap_file ==
 						  Scr.DefaultIcon)
 					{
-ICON_DBG((stderr, "hpn: using first iph '%s'\n", fw->name));
+ICON_DBG((stderr, "hpn: using first iph '%s'\n", fw->name.name));
 						has_icon_changed = True;
 					}
 					else
@@ -3507,24 +3683,24 @@ ICON_DBG((stderr, "hpn: using first iph '%s'\n", fw->name));
 						 * hint if the application did
 						 * not provide it from the
 						 * start */
-ICON_DBG((stderr, "hpn: first iph ignored '%s'\n", fw->name));
+ICON_DBG((stderr, "hpn: first iph ignored '%s'\n", fw->name.name));
 						has_icon_changed = False;
 					}
 				}
 				else if (has_icon_window_hint_changed)
 				{
-ICON_DBG((stderr, "hpn: using iwh '%s'\n", fw->name));
+ICON_DBG((stderr, "hpn: using iwh '%s'\n", fw->name.name));
 					has_icon_changed = True;
 				}
 				else
 				{
-ICON_DBG((stderr, "hpn: iwh not changed, hint ignored '%s'\n", fw->name));
+ICON_DBG((stderr, "hpn: iwh not changed, hint ignored '%s'\n", fw->name.name));
 					has_icon_changed = False;
 				}
 			}
 			else /* NO_ICON_OVERRIDE */
 			{
-ICON_DBG((stderr, "hpn: using hint '%s'\n", fw->name));
+ICON_DBG((stderr, "hpn: using hint '%s'\n", fw->name.name));
 				has_icon_changed = True;
 			}
 
@@ -3535,7 +3711,7 @@ ICON_DBG((stderr, "hpn: using hint '%s'\n", fw->name));
 
 			if (has_icon_changed)
 			{
-ICON_DBG((stderr, "hpn: icon changed '%s'\n", fw->name));
+ICON_DBG((stderr, "hpn: icon changed '%s'\n", fw->name.name));
 				/* Okay, the icon hint has changed and style
 				 * options tell us to honour this change.  Now
 				 * let's see if we have to use the application
@@ -3587,6 +3763,7 @@ ICON_DBG((stderr, "hpn: icon changed '%s'\n", fw->name));
 			exc_destroy_context(exc);
 		}
 		break;
+	}
 	case XA_WM_NORMAL_HINTS:
 		/* just mark wm normal hints as changed and look them up when
 		 * the next ConfigureRequest w/ x, y, width or height set
@@ -3602,7 +3779,7 @@ ICON_DBG((stderr, "hpn: icon changed '%s'\n", fw->name));
 		 * Note that SET_HAS_NEW_WM_NORMAL_HINTS being set here to
 		 * true is still valid.
 		 */
-		GetWindowSizeHints(fw);
+		GetWindowSizeHintsWithCheck(fw, 1);
 		break;
 	default:
 		if (te->xproperty.atom == _XA_WM_PROTOCOLS)
@@ -3616,7 +3793,16 @@ ICON_DBG((stderr, "hpn: icon changed '%s'\n", fw->name));
 		}
 		else if (te->xproperty.atom == _XA_WM_STATE)
 		{
-			if (fw && OnThisPage && focus_is_focused(fw) &&
+			/*
+			 * Make sure at least part of window is on this page
+			 * before giving it focus...
+			 */
+			Bool is_on_this_page;
+
+			is_on_this_page = IsRectangleOnThisPage(
+				&(fw->g.frame), fw->Desk);
+			if (fw && is_on_this_page == True &&
+			    focus_is_focused(fw) &&
 			    FP_DO_FOCUS_ENTER(FW_FOCUS_POLICY(fw)))
 			{
 				/* refresh the focus - why? */
@@ -3661,7 +3847,8 @@ void HandleReparentNotify(const evh_args_t *ea)
 		{
 			XSelectInput(dpy, te->xreparent.window, XEVMASK_MENUW);
 		}
-		discard_events(XEVMASK_FRAMEW);
+		XSync(dpy, 0);
+		FWeedIfWindowEvents(dpy, FW_W_FRAME(fw), NULL, NULL);
 		destroy_window(fw);
 		EWMH_ManageKdeSysTray(te->xreparent.window, te->type);
 		EWMH_WindowDestroyed();
@@ -3945,6 +4132,7 @@ void SendConfigureNotify(
 		(int)client_event.xconfigure.window,
 		(fw->name.name) ? fw->name.name : "");
 #endif
+	fev_sanitise_configure_notify(&client_event.xconfigure);
 	FSendEvent(
 		dpy, FW_W(fw), False, StructureNotifyMask, &client_event);
 	if (send_for_frame_too)
@@ -4149,10 +4337,9 @@ void dispatch_event(XEvent *e)
 
 /* ewmh configure request */
 void events_handle_configure_request(
-	XConfigureRequestEvent cre, FvwmWindow *fw, Bool force,
-	int force_gravity)
+	XEvent *cre, FvwmWindow *fw, Bool force, int force_gravity)
 {
-	__handle_configure_request(cre, NULL, fw, force, force_gravity);
+	_handle_configure_request(cre, NULL, fw, force, force_gravity);
 
 	return;
 }
@@ -4176,6 +4363,14 @@ void HandleEvents(void)
 		}
 		if (My_XNextEvent(dpy, &ev))
 		{
+			/* DV (19-Sep-2014): We mark events as invalid by
+			 * setting the send_event field to a bogus value in a
+			 * predicate procedure.  It's unsure whether this works
+			 * reliably.  */
+			if (FEV_IS_EVENT_INVALID(ev))
+			{
+				continue;
+			}
 			dispatch_event(&ev);
 		}
 		if (Scr.flags.do_need_style_list_update)
@@ -4490,48 +4685,13 @@ int GetContext(FvwmWindow **ret_fw, FvwmWindow *t, const XEvent *e, Window *w)
 	return context;
 }
 
-/*
- *
- * Removes expose events for a specific window from the queue
- *
- */
-int flush_expose(Window w)
+/* Drops all expose events for the given window from the input queue and merges
+ * the expose rectangles into a single big one (*e). */
+void flush_accumulate_expose(Window w, XEvent *e)
 {
-	XEvent dummy;
-	int i=0;
+	FWeedIfWindowEvents(dpy, w, _pred_weed_accumulate_expose, (XPointer)e);
 
-	while (FCheckTypedWindowEvent(dpy, w, Expose, &dummy))
-	{
-		i++;
-	}
-
-	return i;
-}
-
-/* same as above, but merges the expose rectangles into a single big one */
-int flush_accumulate_expose(Window w, XEvent *e)
-{
-	XEvent dummy;
-	int i = 0;
-	int x1 = e->xexpose.x;
-	int y1 = e->xexpose.y;
-	int x2 = x1 + e->xexpose.width;
-	int y2 = y1 + e->xexpose.height;
-
-	while (FCheckTypedWindowEvent(dpy, w, Expose, &dummy))
-	{
-		x1 = min(x1, dummy.xexpose.x);
-		y1 = min(y1, dummy.xexpose.y);
-		x2 = max(x2, dummy.xexpose.x + dummy.xexpose.width);
-		y2 = max(y2, dummy.xexpose.y + dummy.xexpose.height);
-		i++;
-	}
-	e->xexpose.x = x1;
-	e->xexpose.y = y1;
-	e->xexpose.width = x2 - x1;
-	e->xexpose.height = y2 - y1;
-
-	return i;
+	return;
 }
 
 /*
@@ -4542,14 +4702,10 @@ int flush_accumulate_expose(Window w, XEvent *e)
 void handle_all_expose(void)
 {
 	void *saved_event;
-	XEvent evdummy;
 
 	saved_event = fev_save_event();
 	FPending(dpy);
-	while (FCheckMaskEvent(dpy, ExposureMask, &evdummy))
-	{
-		dispatch_event(&evdummy);
-	}
+	FWeedIfEvents(dpy, _pred_weed_handle_expose, NULL);
 	fev_restore_event(saved_event);
 
 	return;
@@ -4613,56 +4769,42 @@ void CoerceEnterNotifyOnCurrentWindow(void)
 	return;
 }
 
-/* This function discards all queued up ButtonPress, ButtonRelease and
- * ButtonMotion events. */
-int discard_events(long event_mask)
+/* This function discards all queued up events selected by the mask. */
+int discard_typed_events(int num_event_types, int *event_types)
 {
-	XEvent e;
+	_weed_event_type_arg args;
 	int count;
+	int i;
 
 	XSync(dpy, 0);
-	for (count = 0; FCheckMaskEvent(dpy, event_mask, &e); count++)
+	assert(num_event_types <= MAX_NUM_WEED_EVENT_TYPES);
+	args.num_event_types = num_event_types;
+	for (i = 0; i < num_event_types; i++)
 	{
-		/* nothing */
+		args.event_types[i] = event_types[i];
 	}
-
-	return count;
-}
-
-/* This function discards all queued up ButtonPress, ButtonRelease and
- * ButtonMotion events. */
-int discard_window_events(Window w, long event_mask)
-{
-	XEvent e;
-	int count;
-
-	XSync(dpy, 0);
-	for (count = 0; FCheckWindowEvent(dpy, w, event_mask, &e); count++)
-	{
-		/* nothing */
-	}
+	count = FWeedIfEvents(dpy, _pred_weed_event_type, (XPointer)&args);
 
 	return count;
 }
 
 /* Similar function for certain types of PropertyNotify. */
-int flush_property_notify(Atom atom, Window w)
+int flush_property_notify_stop_at_event_type(
+	Atom atom, Window w, char do_stop_at_event_type,
+	int stop_at_event_type)
 {
-	XEvent e;
-	int count;
-	test_typed_window_event_args args;
+	flush_property_notify_args args;
 
-	count = 0;
 	XSync(dpy, 0);
 	args.w = w;
 	args.atom = atom;
 	args.event_type = PropertyNotify;
+	args.stop_at_event_type = stop_at_event_type;
+	args.do_stop_at_event_type = do_stop_at_event_type;
+	FWeedIfEvents(
+		dpy, _pred_flush_property_notify_weed, (XPointer)&args);
 
-	/* Get rid of the events. */
-	while (FCheckIfEvent(dpy, &e, test_typed_window_event, (XPointer)&args))
-		count++;
-
-	return count;
+	return 0;
 }
 
 /* Wait for all mouse buttons to be released
@@ -4769,8 +4911,7 @@ void sync_server(int toggle)
 	return;
 }
 
-Bool is_resizing_event_pending(
-	FvwmWindow *fw)
+Bool is_resizing_event_pending(FvwmWindow *fw)
 {
 	XEvent e;
 	check_if_event_args args;

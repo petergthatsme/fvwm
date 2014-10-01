@@ -50,6 +50,7 @@
 #include "commands.h"
 #include "decorations.h"
 #include "virtual.h"
+#include "infostore.h"
 
 /* ---------------------------- local definitions -------------------------- */
 
@@ -2083,10 +2084,23 @@ void CMD_Test(F_CMD_ARGS)
 			flags_ptr = GetNextSimpleOption(flags_ptr, &var_name);
 			if (var_name)
 			{
-				const char *value = getenv(var_name);
+                		const char *value;
+				if ( (strlen(var_name) > 10) && (memcmp(var_name,"infostore.",10) == 0)  )
+				{
+					value = get_metainfo_value(var_name+10);
+				}
+				else
+				{
+					value = getenv(var_name);
+				}
 				char *pattern;
 				/* unfortunately, GetNextSimpleOption is
-				 * broken, does not accept quoted empty "" */
+				 * broken, does not accept quoted empty ""
+				 *
+				 * DV (2-Sep-2014):  It is *not* broken.  The
+				 * parsing functions never return empty tokens
+				 * by design.
+				 */
 				flags_ptr = GetNextSimpleOption(
 					flags_ptr, &pattern);
 				if (!value)

@@ -366,7 +366,7 @@ static void fix_manager_size(WinManager *man, int w, int h)
   if (man->geometry.dir & GROW_FIXED)
     return;
 
-  XGetWMNormalHints(theDisplay, man->theWindow, &size, &mask);
+  FGetWMNormalHints(theDisplay, man->theWindow, &size, &mask);
   size.min_width = w;
   size.max_width = w;
   size.min_height = h;
@@ -835,7 +835,15 @@ void set_win_iconified(WinData *win, int iconified)
 		win->button->drawn_state.dirty_flags |= ICON_STATE_CHANGED;
 	}
 	win->iconified = iconified;
-	if (!iconified)
+	if (iconified)
+	{
+		win->state = ICON_CONTEXT;
+		if (globals.select_win == win)
+		{
+			add_win_state(win, SELECT_CONTEXT);
+		}
+	}
+	else
 	{
 		win->state = PLAIN_CONTEXT;
 		if (globals.select_win == win)
@@ -880,6 +888,11 @@ void add_win_state(WinData *win, int flag)
 		{
 			win->state = FOCUS_SELECT_CONTEXT;
 		}
+		else if (win->state == ICON_CONTEXT ||
+			 win->state == ICON_SELECT_CONTEXT)
+		{
+			win->state = ICON_SELECT_CONTEXT;
+		}
 		else
 		{
 			win->state = SELECT_CONTEXT;
@@ -894,18 +907,23 @@ void add_win_state(WinData *win, int flag)
 	{
 		win->button->drawn_state.dirty_flags |= STATE_CHANGED;
 	}
-	ConsoleDebug(X11, "add_win_state: %s 0x%x\n", win->titlename, flag);
 }
 
 /* this is "broken" */
 void del_win_state(WinData *win, int flag)
 {
-
 	if (flag == FOCUS_CONTEXT)
 	{
 		if (win->state == FOCUS_SELECT_CONTEXT)
 		{
-			win->state = SELECT_CONTEXT;
+			if (win->iconified)
+			{
+				win->state = ICON_SELECT_CONTEXT;
+			}
+			else
+			{
+				win->state = SELECT_CONTEXT;
+			}
 		}
 		else if (win->state == FOCUS_CONTEXT)
 		{
@@ -929,16 +947,13 @@ void del_win_state(WinData *win, int flag)
 		{
 			win->state = FOCUS_CONTEXT;
 		}
+		else if (win->state == ICON_SELECT_CONTEXT)
+		{
+			win->state = ICON_CONTEXT;
+		}
 		else if (win->state == SELECT_CONTEXT)
 		{
-			if (win->iconified)
-			{
-				win->state = ICON_CONTEXT;
-			}
-			else
-			{
-				win->state = PLAIN_CONTEXT;
-			}
+			win->state = PLAIN_CONTEXT;
 		}
 		else
 		{
@@ -954,7 +969,6 @@ void del_win_state(WinData *win, int flag)
 	{
 		win->button->drawn_state.dirty_flags |= STATE_CHANGED;
 	}
-	ConsoleDebug(X11, "del_win_state: %s 0x%x\n", win->titlename, flag);
 }
 
 void set_win_displaystring(WinData *win)
@@ -1372,22 +1386,22 @@ static void draw_button_background(
 {
 	int cset = man->colorsets[button_state];
 
-	if (CSET_IS_TRANSPARENT_PR_PURE(cset) ||
-	    man->backContext[button_state] == None)
+	if (cset >= 0)
+	{
+		SetRectangleBackground(
+			theDisplay, man->theWindow,
+			bounding.x, bounding.y,
+			bounding.width, bounding.height,
+			&Colorset[cset], Pdepth,
+			man->backContext[button_state]);
+	}
+	else if (man->backContext[button_state] == None)
 	{
 		XClearArea(
 			theDisplay, man->theWindow,
 			bounding.x, bounding.y,
 			bounding.width, bounding.height,
 			False);
-	}
-	else if (CSET_IS_TRANSPARENT_PR_TINT(cset))
-	{
-		SetRectangleBackground(
-			theDisplay, man->theWindow,
-			bounding.x, bounding.y,
-			bounding.width, bounding.height,
-			&Colorset[cset], Pdepth, man->backContext[button_state]);
 	}
 	else
 	{
@@ -1826,7 +1840,9 @@ static void draw_button(WinManager *man, int button, int force)
 					man, button_state, &g, context1,
 					context2);
 			}
-			else if (button_state & SELECT_CONTEXT)
+			else if (button_state == SELECT_CONTEXT ||
+				 button_state == FOCUS_SELECT_CONTEXT ||
+				 button_state == ICON_SELECT_CONTEXT)
 			{
 				XDrawRectangle(
 					theDisplay, man->theWindow,
@@ -1962,7 +1978,7 @@ void draw_manager(WinManager *man)
   if (!man->window_up)
     return;
   ConsoleDebug(X11, "Drawing Manager: %s\n", man->titlename);
-  redraw_all = man->dirty_flags & REDRAW_MANAGER;
+  redraw_all = (man->dirty_flags & REDRAW_MANAGER);
 
   if (!man->flags.is_shaded && man->flags.needs_resize_after_unshade) {
     ConsoleDebug(X11, "\tresizing manager\n");
@@ -2347,7 +2363,14 @@ void delete_windows_button(WinData *win)
 		  selected_index);
     move_highlight(man, man->buttons.buttons[selected_index]);
   }
-  win->state = PLAIN_CONTEXT;
+  if (win->iconified)
+  {
+    win->state = ICON_CONTEXT;
+  }
+  else
+  {
+    win->state = PLAIN_CONTEXT;
+  }
 }
 
 void resort_windows_button(WinData *win)
@@ -2473,7 +2496,7 @@ void man_exposed(WinManager *man, XEvent *theEvent)
 				bp[i]->drawn_state.ex = max(r1.x,r2.x);
 				bp[i]->drawn_state.ey = max(r1.y,r2.y);
 				bp[i]->drawn_state.ew =
-					min(r1.x+r1.width,r2.x+r2.width) - 
+					min(r1.x+r1.width,r2.x+r2.width) -
 						max(r1.x,r2.x);
 				bp[i]->drawn_state.eh =
 					min(r1.y+r1.height, r2.y+r2.height) -

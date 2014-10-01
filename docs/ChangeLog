@@ -1,3 +1,16 @@
+2014-08-04  Dominik Vogt  <vogt@linux.vnet.ibm.com>
+
+	* FAQ: Whitespace cleanup; corrected a typo.
+	De-capitalize section headings.
+	* FAQ: New section 8 in the FAQ for questions about controlling
+	annoying applications.
+	(Q6.10): Renumbered to Q8.1
+	(Q8.2): Synonym for Q0.2.
+
+2013-01-02  Dan Espen  <despen@verizon.net>
+
+	* FAQ: Update for Wine question.
+
 2011-04-15  Thomas Adam   <thomas@fvwm.org>
 	* ANNOUNCE:
 	Updated for the latest 2.6.0 stable release.

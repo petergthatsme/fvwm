@@ -2167,9 +2167,6 @@ void update_fvwm_colorset(int cset)
 
 void CMD_Beep(F_CMD_ARGS)
 {
-#if 1 /*!!!*/
-parse_colorset(11, "RootTransparent");
-#endif
 	XBell(dpy, 0);
 
 	return;
@@ -2542,6 +2539,7 @@ void CMD_Wait(F_CMD_ARGS)
 			{
 				temp++;
 			}
+			free(wait_string);
 			wait_string = safestrdup(temp);
 			for (i = strlen(wait_string) - 1; i >= 0 &&
 				     isspace(wait_string[i]); i--)
@@ -2682,7 +2680,7 @@ void CMD_Echo(F_CMD_ARGS)
 			action[len-1]='\0';
 		}
 	}
-	fvwm_msg(ECHO,"Echo",action);
+	fvwm_msg(ECHO, "Echo", "%s", action);
 
 	return;
 }

@@ -402,6 +402,7 @@ void Loop(void)
 		break;
 
 	case ConfigureNotify:
+	      fev_sanitise_configure_notify(&Event.xconfigure);
 	      if (Event.xconfigure.window == icon_win &&
 		  !CSET_IS_TRANSPARENT(colorset))
 	      {
@@ -1714,16 +1715,19 @@ void MySendFvwmPipe(int *fd, char *message, unsigned long window)
 
     if (!ExecIconBoxFunction(temp_msg))
     {
-      write(fd[0], &window, sizeof(unsigned long));
+      int n;
+
+      n = write(fd[0], &window, sizeof(unsigned long));
+      (void)n;
 
       w=strlen(temp_msg);
-      write(fd[0], &w, sizeof(w));
-      write(fd[0], temp_msg, w);
+      n = write(fd[0], &w, sizeof(w));
+      n = write(fd[0], temp_msg, w);
 
       /* keep going */
 
       w = 1;
-      write(fd[0], &w, sizeof(w));
+      n = write(fd[0], &w, sizeof(w));
     }
     if (temp_msg != hold) free(temp_msg);
     else break;

@@ -2,24 +2,87 @@ Note, the changes for the last STABLE release start with release
 2.6.0.
 
 -------------------------------------------------------------------
-Changes in 2.6.5 (20-Apr-2012)
+Changes in stable release 2.6.6 (not released yet)
 
-* New features:
-  - N/A
+* New fvwm features:
+
+  - Support for Russian from Ivan Gayevskiy.
+  - EnvMatch supports infostore variables.
+  - The option "forget" to the Maximize command allows to
+    unmaximize a window without changing its size and position.
+  - Windows shaded to a corner (NW, NE, SW, SE) are reduced to a
+    small square.
+  - New option "!raise" to the WarpToWindow command.
+  - The new extended variables $[wa.x], $[wa.y], $[wa.width],
+    $[wa.height] can be used to get the geometry of the EWMH
+    working area, and $[dwa.x], $[dwa.y], $[dwa.width],
+    $[dwa.height] can be used to get the geometry of the EWMH
+    dynamic working area.
+  - The Resize commands accept "wa" or "da" as a suffix of the
+    width or height value.  If present, the value is a percentage
+    of the width or height of the EWMH working area or the EWMH
+    dynamic working area.
+  - Fvwm is much more resilient against applications that flood the
+    window manager with repeated events.
+
+* New module features:
+
+  - FvwmForm supports separator lines.
+  - New FvwmIconMan options:
+      IconAndSelectButton
+      IconAndSelectColorset
 
 * Bug fixes:
+
   - Provide a wrapper for the deprecation of XKeycodeToKeysym and
     use XkbKeycodeToKeysym() where appropriate.
+  - fvwm-desktop-menu is re-written and provides better support of
+    the XDG menu specification.
+  - FvwmIconMan had problems displaying the hilight colour on some
+    systems (64 bit issue?).
+  - Globally active windows cannot take the focus if the style
+    forbids programs to take focus themselves (style
+    !FPFocusByProgram).
+  - Windows no longer jump from one position to the other which
+    could happen in some cases with SnapAttraction.  Windows now
+    snap to the closest window (or screen edge).
+  - Removing bindings had several strange side effects that are
+    fixed now (removing too many bindings; old bindings showing up
+    again after another is removed; possibly other effects).
+  - Windows sometimes did not get expose events (i.e. did not
+    redraw properly) if they were uncovered by moving a window
+    above them.  This has been fixed.
+  - FvwmConsole now causes much less network traffic.
+  - Suppress bogus events sent to the modules when a window is
+    resized with the mouse.
+  - Properly handle the has_ref_window_moved flag for ResizeMove and
+    ResizeMoveMaximize.
+  - Removed some unnecessary redraws in FvwmPager.
+  - The option "NoDeskLimitY" option of the GotoPage command did
+    not work.
+  - Negative coordinates in the "rectangle" option to the Menu
+    commend did not work correctly.  This has been fixed.
+  - Removes a slight graphics problem whith the ResizeMaximize
+    command being invoked from a window button menu.
+  - When an attempt to reparent a client window (i.e. decorate
+    it) fails, fvwm no longer throws away all events but only the
+    events for that window.
+
+  - FvwmForm now honours a Xinerama screen specifier in its
+    geometry.
+  - FvwmIconMan had problems displaying the hilight colour on some
+    systems (64 bit issue?).
+  - Several possible format string attacks have been fixed.
 
 -------------------------------------------------------------------
-
--------------------------------------------------------------------
-Changes in 2.6.5 (20-Apr-2012)
+Changes in stable release 2.6.5 (20-Apr-2012)
 
 * New features:
+
   - FvwmPager now wraps window names if SmallFont is set.
 
 * Bug fixes:
+
   - Made signals registered with FVWM unblocking.
   - The "UnderMouse" option to PositionPlacement now honors the EWMH
     working area by default, if it's in use.
@@ -29,7 +92,7 @@ Changes in 2.6.5 (20-Apr-2012)
 Changes in stable release 2.6.4 (01-Feb-2012)
 
 * New features:
-  
+
   - FvwmIconMan no longer allows for itself to be transient by using:
 
     Module FvwmIconMan Transient
@@ -53,18 +116,18 @@ Changes in stable release 2.6.4 (01-Feb-2012)
     windows, such as with XEmbed, when changing the parent's
     geometry.
   - Conditional command processing of !Layer n, as in:
-    
+
         Next (Xteddy, !Layer 4) Echo cuddles
-    
+
     has now been fixed.
   - Fixed handling of swallowed windows for transient FvwmButtons'.
   - fvwm-menu-desktop now looks in /usr/share/applications for KDE
     legacy mode.
   - fvwm-config no longer accepts "--is-stable", "--is-released",
-	"--is-final".
+    "--is-final".
 
 -------------------------------------------------------------------
-Changes in stable release 2.6.3 (30-Sept-2011)
+Changes in stable release 2.6.3 (30-Sep-2011)
 
 * New features:
 
